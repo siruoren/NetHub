@@ -341,3 +341,6 @@ asyncio.exceptions.TimeoutError
 2026-07-17 19:41:12 [INFO] apscheduler.scheduler: Removed job fetch_sub_4
 2026-07-17 19:42:54 [INFO] app.scheduler: 订阅 #4 拉取完成: 新增 0, 更新 0, 跳过 76, 总解析 76
 2026-07-17 19:42:54 [WARNING] app.scheduler: 订阅 #4 不存在
+2026-07-17 19:53:23 [INFO] app.scheduler: 调度器已关闭
+2026-07-17 19:53:23 [INFO] apscheduler.scheduler: Scheduler has been shut down
+2026-07-17 19:53:23 [INFO] app: 应用已关闭
