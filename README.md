@@ -1,28 +1,27 @@
-# ProxyPool - 代理池管理系统
+# ProxyPool v1.0.0
 
-自动获取、检测、维护代理节点池，提供 Web 界面和订阅链接。
+自动获取、检测、维护代理节点池，提供 Web 管理界面和订阅链接输出。
 
 ## 功能特性
 
-- 🔄 **定时拉取** - 自动从订阅源获取代理节点（vmess/vless/trojan/ss/hysteria2）
-- ⚡ **延迟检测** - TCP/TLS 连通性检测，并发可配置
-- 📊 **自动入库** - 延迟低于阈值的代理自动入库，超标自动删除
-- ✅ **定时验证** - 定期验证已存代理可用性，连续失败自动清理
-- 🌐 **Web 界面** - 展示代理列表、延迟、状态和统计信息
-- 🔗 **订阅链接** - 提供 v2ray（base64）和 Clash（YAML）格式订阅
-- 🐳 **一键部署** - Docker Compose 部署，数据持久化
+- **订阅源管理** - 数据库驱动的增删改查，每个订阅源独立配置 Crontab、延迟阈值、重试次数、并发数
+- **Crontab 定时拉取** - 每个订阅源支持 5 位 Crontab 表达式精准调度
+- **HTTP 延迟检测** - 通过代理请求多个目标 URL，取最大延迟值；检测目标页面动态配置
+- **多协议支持** - vmess / vless / trojan / ss / hysteria2 解析与 Clash 配置生成
+- **自动清理** - 连续 3 次验证失败的代理自动移除；连续 30 天无代理的订阅源自动删除
+- **单页面管理** - 订阅源管理 + 可用代理列表在同一页面，按订阅源 Tab 切换
+- **协议分布图** - 饼状图动态展示各协议代理数量和百分比
+- **订阅输出** - 仅输出当前可用代理，支持 V2Ray（base64）和 Clash（YAML）格式
+- **日志归档** - 按天自动归档，自动清理 7 天前的日志
+- **Docker 部署** - Docker Compose 一键启动
 
 ## 快速开始
 
 ### Docker Compose（推荐）
 
 ```bash
-# 克隆项目
 git clone https://github.com/your-username/proxy_pool.git
 cd proxy_pool
-
-# 编辑订阅源
-vim resources/Subscription.txt
 
 # 按需修改配置
 vim config.yaml
@@ -39,33 +38,43 @@ docker-compose up -d
 # 安装依赖
 pip install -r requirements.txt
 
-# 编辑订阅源
-vim resources/Subscription.txt
-
 # 启动服务
 python -m app.main
 ```
 
 ## 配置说明
 
-编辑 `config.yaml` 进行配置：
+编辑 `config.yaml`：
 
 ```yaml
 server:
   host: "0.0.0.0"
   port: 8080
+  debug: false
+
+database:
+  path: "data/proxy_pool.db"
 
 check:
-  timeout: 5.0           # 检测超时（秒）
-  max_concurrent: 50     # 并发检测数
-  latency_threshold: 3000.0  # 延迟阈值（毫秒）
+  urls:                          # 默认检测目标（首次启动导入数据库）
+    - "http://www.google.com/generate_204"
+    - "http://www.gstatic.com/generate_204"
+  timeout: 5.0                   # 检测超时（秒）
+  max_concurrent: 50             # 全局并发检测数
+  latency_threshold: 1500.0      # 全局延迟阈值（毫秒）
 
 scheduler:
-  fetch_interval: 3600   # 拉取订阅间隔（秒）
-  verify_interval: 1800  # 验证代理间隔（秒）
-  cleanup_interval: 7200 # 清理间隔（秒）
-  max_fail_count: 3      # 最大连续失败次数
+  fetch_interval: 3600           # 拉取订阅间隔（秒）
+  verify_interval: 1800          # 验证代理间隔（秒）
+  cleanup_interval: 7200         # 清理间隔（秒）
+  max_fail_count: 3              # 最大连续失败次数
+
+resources:
+  subscription_file: "resources/Subscription.txt"
+  domain_check_file: "resources/domain_check.txt"
 ```
+
+> 检测目标 URL 首次启动时从 `domain_check_file` 导入数据库，后续在页面「检测目标」中管理，修改即时生效。
 
 ### 环境变量
 
@@ -76,15 +85,53 @@ scheduler:
 
 ## API 接口
 
+### 代理
+
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/proxies` | 可用代理列表 |
 | GET | `/api/proxies/all` | 所有代理 |
+| GET | `/api/proxies/grouped` | 按订阅来源分组的可用代理 |
 | DELETE | `/api/proxies/{id}` | 删除代理 |
-| GET | `/api/subscription/v2ray` | V2Ray 订阅 |
-| GET | `/api/subscription/clash` | Clash 订阅 |
-| POST | `/api/fetch` | 手动拉取订阅 |
-| POST | `/api/verify` | 手动验证代理 |
+
+### 订阅输出
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/subscription/v2ray` | V2Ray 格式订阅（base64） |
+| GET | `/api/subscription/clash` | Clash 格式订阅（YAML） |
+
+### 订阅源管理
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/subscriptions` | 订阅源列表 |
+| POST | `/api/subscriptions` | 添加订阅源 |
+| POST | `/api/subscriptions/auto` | 自动添加（仅 URL 必填，自动拉取验证） |
+| PUT | `/api/subscriptions/{sub_id}` | 更新订阅源 |
+| DELETE | `/api/subscriptions/{sub_id}` | 删除订阅源 |
+
+### 拉取与验证
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/fetch` | 拉取所有订阅 |
+| POST | `/api/fetch/{sub_id}` | 拉取指定订阅 |
+| POST | `/api/verify` | 验证所有代理 |
+| POST | `/api/verify/{sub_id}` | 验证指定订阅代理 |
+
+### 检测目标
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/check-urls` | 检测目标 URL 列表 |
+| POST | `/api/check-urls` | 添加检测目标 URL |
+| DELETE | `/api/check-urls/{url_id}` | 删除检测目标 URL |
+
+### 其他
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
 | GET | `/api/stats` | 统计信息 |
 | GET | `/api/health` | 健康检查 |
 
@@ -94,6 +141,8 @@ scheduler:
 
 - **V2Ray**: `http://your-server:8080/api/subscription/v2ray`
 - **Clash**: `http://your-server:8080/api/subscription/clash`
+
+> 订阅内容仅包含延迟低于阈值的可用代理，随代理池自动更新。
 
 ## 支持协议
 
@@ -110,21 +159,30 @@ scheduler:
 ```
 proxy_pool/
 ├── app/
-│   ├── __init__.py          # 应用工厂
+│   ├── __init__.py          # 应用工厂 & 全局单例
 │   ├── main.py              # 启动入口
-│   ├── config.py            # 配置加载
-│   ├── database.py          # 数据库操作
-│   ├── models.py            # 数据模型
-│   ├── parser.py            # 订阅解析
-│   ├── checker.py           # 代理检测
-│   ├── generator.py         # 订阅生成
-│   ├── scheduler.py         # 定时任务
-│   ├── routers/             # 路由
-│   └── templates/           # 模板
-├── resources/               # 资源文件
+│   ├── config.py            # YAML 配置加载
+│   ├── database.py          # aiosqlite 异步数据库操作
+│   ├── models.py            # 数据模型（ProxyInfo / ProxyDBRecord / SubscriptionRecord）
+│   ├── parser.py            # 订阅拉取 & 解析（5 协议）
+│   ├── checker.py           # HTTP 延迟检测（多目标取最大值）
+│   ├── generator.py         # V2Ray / Clash 订阅生成
+│   ├── scheduler.py         # APScheduler 定时任务调度
+│   ├── routers/
+│   │   ├── api.py           # REST API 路由
+│   │   └── web.py           # Web 页面路由
+│   └── templates/
+│       ├── base.html        # 基础模板
+│       ├── index.html       # 主页面（管理 + 代理列表）
+│       └── subscription.html # 订阅链接页
+├── resources/
+│   └── domain_check.txt    # 默认检测目标 URL
+├── logs/                    # 日志目录（自动归档）
 ├── config.yaml              # 配置文件
 ├── docker-compose.yaml      # Docker 编排
-└── Dockerfile               # Docker 镜像
+├── Dockerfile               # Docker 镜像
+├── CHANGELOG.md             # 变更日志
+└── requirements.txt         # Python 依赖
 ```
 
 ## License
