@@ -82,9 +82,11 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
     # 初始化组件
     _db = ProxyDatabase(_config.database.path)
 
-    # 初始化模板（禁用 Jinja2 模板缓存，避免与 Starlette 兼容性问题）
+    # 初始化模板
     template_dir = Path(__file__).parent / "templates"
-    _templates = Jinja2Templates(directory=str(template_dir), cache_size=0)
+    _templates = Jinja2Templates(directory=str(template_dir))
+    # 禁用 Jinja2 模板缓存，避免新版 Starlette 缓存兼容性问题
+    _templates.env.cache_size = 0
 
     # 创建 FastAPI 实例
     app = FastAPI(
