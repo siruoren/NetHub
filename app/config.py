@@ -1,0 +1,131 @@
+"""配置加载模块 - 从 YAML 文件加载配置"""
+
+import os
+from dataclasses import dataclass, field
+
+import yaml
+
+
+@dataclass
+class ServerConfig:
+    host: str = "0.0.0.0"
+    port: int = 8080
+    debug: bool = False
+
+
+@dataclass
+class DatabaseConfig:
+    path: str = "data/proxy_pool.db"
+
+
+@dataclass
+class CheckConfig:
+    urls: list = field(default_factory=lambda: [
+        "http://www.google.com/generate_204",
+        "http://www.gstatic.com/generate_204",
+    ])
+    timeout: float = 5.0
+    max_concurrent: int = 50
+    latency_threshold: float = 1500.0
+
+
+@dataclass
+class SchedulerConfig:
+    fetch_interval: int = 3600  # 拉取订阅间隔（秒）
+    verify_interval: int = 1800  # 验证代理间隔（秒）
+    cleanup_interval: int = 7200  # 清理间隔（秒）
+    max_fail_count: int = 3  # 最大连续失败次数
+
+
+@dataclass
+class ResourcesConfig:
+    subscription_file: str = "resources/Subscription.txt"
+    domain_check_file: str = "resources/domain_check.txt"
+
+
+@dataclass
+class AppConfig:
+    server: ServerConfig = field(default_factory=ServerConfig)
+    database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    check: CheckConfig = field(default_factory=CheckConfig)
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    resources: ResourcesConfig = field(default_factory=ResourcesConfig)
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """深度合并字典，override 覆盖 base"""
+    result = base.copy()
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def _dict_to_config(data: dict) -> AppConfig:
+    """将字典转为 AppConfig dataclass"""
+    server = ServerConfig(**data.get("server", {}))
+    database = DatabaseConfig(**data.get("database", {}))
+    check_data = data.get("check", {})
+    default_check = CheckConfig()
+    check = CheckConfig(
+        urls=check_data.get("urls", default_check.urls),
+        timeout=check_data.get("timeout", default_check.timeout),
+        max_concurrent=check_data.get("max_concurrent", default_check.max_concurrent),
+        latency_threshold=check_data.get("latency_threshold", default_check.latency_threshold),
+    )
+    scheduler = SchedulerConfig(**data.get("scheduler", {}))
+    resources = ResourcesConfig(**data.get("resources", {}))
+    return AppConfig(
+        server=server,
+        database=database,
+        check=check,
+        scheduler=scheduler,
+        resources=resources,
+    )
+
+
+def load_config(path: str = "config.yaml") -> AppConfig:
+    """从 YAML 文件加载配置，不存在则使用默认值"""
+    defaults = {
+        "server": {"host": "0.0.0.0", "port": 8080, "debug": False},
+        "database": {"path": "data/proxy_pool.db"},
+        "check": {
+            "urls": [
+                "http://www.google.com/generate_204",
+                "http://www.gstatic.com/generate_204",
+            ],
+            "timeout": 5.0,
+            "max_concurrent": 50,
+            "latency_threshold": 3000.0,
+        },
+        "scheduler": {
+            "fetch_interval": 3600,
+            "verify_interval": 1800,
+            "cleanup_interval": 7200,
+            "max_fail_count": 3,
+        },
+        "resources": {
+            "subscription_file": "resources/Subscription.txt",
+            "domain_check_file": "resources/domain_check.txt",
+        },
+    }
+
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            file_data = yaml.safe_load(f) or {}
+        merged = _deep_merge(defaults, file_data)
+    else:
+        merged = defaults
+
+    # 环境变量覆盖
+    env_port = os.environ.get("PROXY_POOL_PORT")
+    if env_port:
+        merged["server"]["port"] = int(env_port)
+
+    env_db_path = os.environ.get("PROXY_POOL_DB_PATH")
+    if env_db_path:
+        merged["database"]["path"] = env_db_path
+
+    return _dict_to_config(merged)

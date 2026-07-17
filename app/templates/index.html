@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+
+{% block title %}代理列表 - ProxyPool{% endblock %}
+
+{% block content %}
+<!-- 统计卡片 -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card stat-card text-white bg-primary">
+            <div class="card-body">
+                <h6 class="card-title"><i class="bi bi-collection"></i> 总代理数</h6>
+                <h3 class="mb-0">{{ stats.total }}</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card text-white bg-success">
+            <div class="card-body">
+                <h6 class="card-title"><i class="bi bi-check-circle"></i> 可用数</h6>
+                <h3 class="mb-0">{{ stats.available }}</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card text-white bg-danger">
+            <div class="card-body">
+                <h6 class="card-title"><i class="bi bi-x-circle"></i> 不可用</h6>
+                <h3 class="mb-0">{{ stats.unavailable }}</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card text-white bg-info">
+            <div class="card-body">
+                <h6 class="card-title"><i class="bi bi-speedometer2"></i> 平均延迟</h6>
+                <h3 class="mb-0">{{ "%.0f"|format(stats.avg_latency_ms) }} ms</h3>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 操作按钮 -->
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+        <h5 class="mb-0">代理列表</h5>
+        <small class="text-muted">
+            延迟阈值: {{ latency_threshold }} ms
+            {% if last_fetch_time %}
+            | 上次拉取: {{ last_fetch_time[:19] }}
+            {% endif %}
+            {% if last_verify_time %}
+            | 上次验证: {{ last_verify_time[:19] }}
+            {% endif %}
+        </small>
+    </div>
+    <div>
+        <button class="btn btn-primary btn-sm" onclick="triggerFetch()">
+            <i class="bi bi-cloud-download"></i> 拉取订阅
+        </button>
+        <button class="btn btn-outline-primary btn-sm" onclick="triggerVerify()">
+            <i class="bi bi-arrow-repeat"></i> 验证代理
+        </button>
+        <button class="btn btn-outline-secondary btn-sm" onclick="refreshPage()">
+            <i class="bi bi-bootstrap-reboot"></i> 刷新
+        </button>
+    </div>
+</div>
+
+<!-- 代理表格 -->
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-hover table-sm mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th width="30">#</th>
+                    <th>名称</th>
+                    <th>协议</th>
+                    <th>地址</th>
+                    <th>端口</th>
+                    <th>延迟</th>
+                    <th>状态</th>
+                    <th>失败次数</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for proxy in proxies %}
+                <tr>
+                    <td>{{ loop.index }}</td>
+                    <td title="{{ proxy.name }}">{{ proxy.name[:30] }}{% if proxy.name|length > 30 %}...{% endif %}</td>
+                    <td><span class="badge bg-secondary">{{ proxy.protocol }}</span></td>
+                    <td><code>{{ proxy.address }}</code></td>
+                    <td>{{ proxy.port }}</td>
+                    <td>
+                        {% if proxy.latency_ms >= 0 %}
+                            <span class="{{ 'latency-good' if proxy.latency_ms < 500 else ('latency-medium' if proxy.latency_ms < 1500 else 'latency-bad') }}">
+                                {{ "%.0f"|format(proxy.latency_ms) }} ms
+                            </span>
+                        {% else %}
+                            <span class="text-muted">-</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <span class="badge status-{{ proxy.status }}">
+                            {% if proxy.status == 'available' %}可用{% elif proxy.status == 'unavailable' %}不可用{% else %}未检测{% endif %}
+                        </span>
+                    </td>
+                    <td>{{ proxy.fail_count }}</td>
+                    <td>
+                        <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem"
+                                onclick="deleteProxy({{ proxy.id }})">删除</button>
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not proxies %}
+                <tr>
+                    <td colspan="9" class="text-center text-muted py-4">暂无代理数据，请点击"拉取订阅"获取</td>
+                </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- 协议分布 -->
+{% if stats.protocol_distribution %}
+<div class="card mt-4">
+    <div class="card-body">
+        <h6 class="card-title">协议分布</h6>
+        <div class="d-flex gap-3">
+            {% for proto, count in stats.protocol_distribution.items() %}
+            <span class="badge bg-primary">{{ proto }}: {{ count }}</span>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_script %}
+<script>
+async function triggerFetch() {
+    try {
+        const resp = await fetch('/api/fetch', { method: 'POST' });
+        const data = await resp.json();
+        alert(data.message);
+    } catch (e) {
+        alert('请求失败: ' + e.message);
+    }
+}
+
+async function triggerVerify() {
+    try {
+        const resp = await fetch('/api/verify', { method: 'POST' });
+        const data = await resp.json();
+        alert(data.message);
+    } catch (e) {
+        alert('请求失败: ' + e.message);
+    }
+}
+
+async function deleteProxy(id) {
+    if (!confirm('确定删除该代理？')) return;
+    try {
+        await fetch('/api/proxies/' + id, { method: 'DELETE' });
+        location.reload();
+    } catch (e) {
+        alert('删除失败: ' + e.message);
+    }
+}
+
+function refreshPage() {
+    location.reload();
+}
+
+// 自动刷新（60秒）
+setTimeout(function() { location.reload(); }, 60000);
+</script>
+{% endblock %}
