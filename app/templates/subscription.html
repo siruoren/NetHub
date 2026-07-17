@@ -48,14 +48,12 @@
 
         <!-- 使用说明 -->
         <div class="card">
-            <div class="card-header">
-                <i class="bi bi-info-circle"></i> 使用说明
-            </div>
+            <div class="card-header"><i class="bi bi-info-circle"></i> 使用说明</div>
             <div class="card-body">
                 <ol>
-                    <li>点击上方<b>复制</b>按钮获取订阅链接</li>
-                    <li>在代理客户端中添加订阅，粘贴链接</li>
-                    <li>更新订阅即可获取当前可用的代理节点</li>
+                    <li>在<b>控制台</b>页面添加订阅源并配置参数</li>
+                    <li>点击"拉取订阅"获取可用代理</li>
+                    <li>复制上方订阅链接到代理客户端即可使用</li>
                     <li>订阅内容会随代理池自动更新，无需手动更换链接</li>
                 </ol>
                 <div class="alert alert-info mb-0">
@@ -74,7 +72,6 @@ function copyToClipboard(elementId) {
     input.select();
     input.setSelectionRange(0, 99999);
     navigator.clipboard.writeText(input.value).then(function() {
-        // 显示复制成功提示
         const btn = input.closest('.card').querySelector('button');
         const originalText = btn.innerHTML;
         btn.innerHTML = '<i class="bi bi-check-lg"></i> 已复制';

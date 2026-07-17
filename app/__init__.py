@@ -50,13 +50,34 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
     # 加载配置
     _config = load_config(config_path)
 
-    # 配置日志
+    # 配置日志（控制台 + 按天归档文件，保留7天）
     log_level = logging.DEBUG if _config.server.debug else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    log_fmt = logging.Formatter(
+        fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+
+    # 控制台
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(log_fmt)
+    root_logger.addHandler(console_handler)
+
+    # 文件：按天归档，保留7天
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    from logging.handlers import TimedRotatingFileHandler
+    file_handler = TimedRotatingFileHandler(
+        filename=str(log_dir / "proxy_pool.log"),
+        when="midnight",
+        interval=1,
+        backupCount=7,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(log_fmt)
+    file_handler.suffix = "%Y-%m-%d"
+    root_logger.addHandler(file_handler)
 
     # 初始化组件
     _db = ProxyDatabase(_config.database.path)

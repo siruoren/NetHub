@@ -39,3 +39,19 @@ class ProxyDBRecord:
         if self.fail_count > 0:
             return "unavailable"
         return "available"
+
+
+@dataclass
+class SubscriptionRecord:
+    """订阅源记录"""
+    id: int
+    url: str
+    crontab: str  # crontab 格式的定时表达式
+    latency_threshold: float  # 该订阅的延迟阈值(ms)
+    max_retries: int  # 最大重试次数
+    max_concurrent: int  # 异步最大并发数
+    enabled: bool  # 是否启用
+    created_at: str  # ISO8601
+    empty_days: int  # 连续代理数为0的天数
+    total_count: int  # 最新一次拉取的代理地址总数
+    fetch_status: str  # 拉取状态: idle / updating / success / failed

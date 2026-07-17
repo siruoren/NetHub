@@ -1,6 +1,9 @@
+from __future__ import annotations
 """Web UI 页面路由 - Jinja2 模板渲染"""
 
+import json
 import logging
+from dataclasses import asdict
 
 from fastapi import APIRouter, Request
 
@@ -21,6 +24,17 @@ async def index(request: Request):
 
     proxies = await db.get_all_proxies()
     stats = await db.get_stats()
+    subscriptions = await db.get_all_subscriptions()
+    # 按来源分组的可用代理
+    grouped = await db.get_proxies_grouped_by_source(config.check.latency_threshold)
+    # 计算每个订阅源的可用代理数量
+    sub_available_counts = {}
+    for sub in subscriptions:
+        sub_available_counts[sub.url] = len(grouped.get(sub.url, []))
+    subscriptions_json = json.dumps(
+        [dict(asdict(s), available_count=sub_available_counts.get(s.url, 0)) for s in subscriptions],
+        ensure_ascii=False,
+    )
 
     return templates.TemplateResponse(
         "index.html",
@@ -28,6 +42,10 @@ async def index(request: Request):
             "request": request,
             "proxies": proxies,
             "stats": stats,
+            "subscriptions": subscriptions,
+            "subscriptions_json": subscriptions_json,
+            "sub_available_counts": sub_available_counts,
+            "grouped": grouped,
             "latency_threshold": config.check.latency_threshold,
             "last_fetch_time": scheduler.last_fetch_time,
             "last_verify_time": scheduler.last_verify_time,
