@@ -25,5 +25,5 @@ resources/Subscription.txt
 
 # 环境变量
 .env
-logs/proxy_pool.log
+logs/**
 logs/proxy_pool.log

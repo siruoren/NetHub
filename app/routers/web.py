@@ -39,9 +39,9 @@ async def index(request: Request):
     )
 
     return templates.TemplateResponse(
+        request,
         "index.html",
         {
-            "request": request,
             "proxies": proxies,
             "stats": stats,
             "subscriptions": subscriptions,
@@ -69,9 +69,9 @@ async def subscription_page(request: Request):
     clash_url = f"{scheme}://{host}/api/subscription/clash"
 
     return templates.TemplateResponse(
+        request,
         "subscription.html",
         {
-            "request": request,
             "v2ray_url": v2ray_url,
             "clash_url": clash_url,
         },
