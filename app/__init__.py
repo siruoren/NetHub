@@ -102,8 +102,15 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
         await _db.init()
         logger.info("数据库初始化完成: %s", _config.database.path)
 
-        # 加载检测 URL
-        check_urls = await load_check_urls(_config.resources.domain_check_file)
+        # 初始化检测 URL：从配置文件加载到数据库（仅首次）
+        config_check_urls = await load_check_urls(_config.resources.domain_check_file)
+        await _db.init_check_urls(config_check_urls)
+
+        # 从数据库加载检测 URL
+        db_check_urls = await _db.get_check_urls()
+        check_urls = [u["url"] for u in db_check_urls]
+        if not check_urls:
+            check_urls = config_check_urls
         logger.info("检测 URL: %s", check_urls)
 
         # 初始化检测器

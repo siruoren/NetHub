@@ -27,6 +27,8 @@ async def index(request: Request):
     subscriptions = await db.get_all_subscriptions()
     # 按来源分组的可用代理
     grouped = await db.get_proxies_grouped_by_source(config.check.latency_threshold)
+    # 检测目标 URL
+    check_urls = await db.get_check_urls()
     # 计算每个订阅源的可用代理数量
     sub_available_counts = {}
     for sub in subscriptions:
@@ -45,6 +47,7 @@ async def index(request: Request):
             "subscriptions": subscriptions,
             "subscriptions_json": subscriptions_json,
             "sub_available_counts": sub_available_counts,
+            "check_urls": check_urls,
             "grouped": grouped,
             "latency_threshold": config.check.latency_threshold,
             "last_fetch_time": scheduler.last_fetch_time,

@@ -62,8 +62,22 @@ class ProxyDatabase:
             );
 
             CREATE INDEX IF NOT EXISTS idx_subscriptions_url ON subscriptions(url);
+
+            CREATE TABLE IF NOT EXISTS check_urls (
+                id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                url   TEXT    NOT NULL UNIQUE
+            );
         """)
         await self._db.commit()
+
+        # 兼容旧表：添加 check_urls 表（如不存在）
+        try:
+            await self._db.execute(
+                "CREATE TABLE IF NOT EXISTS check_urls (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL UNIQUE)"
+            )
+            await self._db.commit()
+        except Exception:
+            pass
 
         # 兼容旧表：添加 empty_days 和 total_count 列（如不存在）
         try:
@@ -417,3 +431,40 @@ class ProxyDatabase:
         )
         row = await cursor.fetchone()
         return row["latest"] or ""
+
+    # ---- 检测目标 URL ----
+
+    async def get_check_urls(self) -> list[dict]:
+        """获取所有检测目标 URL"""
+        cursor = await self._db.execute("SELECT id, url FROM check_urls ORDER BY id ASC")
+        rows = await cursor.fetchall()
+        return [{"id": row["id"], "url": row["url"]} for row in rows]
+
+    async def add_check_url(self, url: str) -> dict | None:
+        """添加检测目标 URL，重复则忽略"""
+        try:
+            cursor = await self._db.execute(
+                "INSERT INTO check_urls (url) VALUES (?)", (url,)
+            )
+            await self._db.commit()
+            return {"id": cursor.lastrowid, "url": url}
+        except aiosqlite.IntegrityError:
+            return None
+
+    async def delete_check_url(self, url_id: int) -> bool:
+        """删除检测目标 URL"""
+        cursor = await self._db.execute("DELETE FROM check_urls WHERE id = ?", (url_id,))
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def init_check_urls(self, urls: list[str]) -> None:
+        """初始化检测 URL（仅在表为空时插入）"""
+        cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM check_urls")
+        row = await cursor.fetchone()
+        if row["cnt"] == 0 and urls:
+            for url in urls:
+                try:
+                    await self._db.execute("INSERT INTO check_urls (url) VALUES (?)", (url,))
+                except aiosqlite.IntegrityError:
+                    pass
+            await self._db.commit()

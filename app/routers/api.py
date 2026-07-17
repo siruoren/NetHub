@@ -327,3 +327,45 @@ def _subscription_to_dict(sub) -> dict:
         "total_count": sub.total_count,
         "fetch_status": sub.fetch_status,
     }
+
+
+# ---- 检测目标 URL ----
+
+@router.get("/check-urls")
+async def get_check_urls():
+    """获取所有检测目标 URL"""
+    db = get_db()
+    urls = await db.get_check_urls()
+    return {"total": len(urls), "urls": urls}
+
+
+@router.post("/check-urls")
+async def add_check_url(url: str = ""):
+    """添加检测目标 URL"""
+    from fastapi import HTTPException
+    if not url:
+        raise HTTPException(status_code=400, detail="URL 不能为空")
+    db = get_db()
+    result = await db.add_check_url(url)
+    if not result:
+        raise HTTPException(status_code=409, detail="URL 已存在")
+    # 更新 checker 的 check_urls
+    checker = get_checker()
+    if checker:
+        checker.check_urls = [u["url"] for u in await db.get_check_urls()]
+    return result
+
+
+@router.delete("/check-urls/{url_id}")
+async def delete_check_url(url_id: int):
+    """删除检测目标 URL"""
+    from fastapi import HTTPException
+    db = get_db()
+    success = await db.delete_check_url(url_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="URL 不存在")
+    # 更新 checker 的 check_urls
+    checker = get_checker()
+    if checker:
+        checker.check_urls = [u["url"] for u in await db.get_check_urls()]
+    return {"message": "deleted"}

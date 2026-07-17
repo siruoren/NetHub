@@ -55,9 +55,14 @@
         <div class="card h-100">
             <div class="card-header d-flex justify-content-between align-items-center py-2">
                 <span class="fw-bold"><i class="bi bi-gear"></i> 订阅源管理</span>
-                <button class="btn btn-primary btn-sm" data-bs-toggle="collapse" data-bs-target="#addSubForm">
-                    <i class="bi bi-plus-lg"></i> 添加
-                </button>
+                <div class="d-flex gap-1">
+                    <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="collapse" data-bs-target="#checkUrlForm">
+                        <i class="bi bi-bullseye"></i> 检测目标
+                    </button>
+                    <button class="btn btn-primary btn-sm" data-bs-toggle="collapse" data-bs-target="#addSubForm">
+                        <i class="bi bi-plus-lg"></i> 添加
+                    </button>
+                </div>
             </div>
             <div class="card-body">
                 <!-- 添加订阅表单（可折叠） -->
@@ -89,6 +94,30 @@
                                 </button>
                             </div>
                         </div>
+                    </div>
+                </div>
+                <!-- 检测目标配置（可折叠） -->
+                <div class="collapse mb-3" id="checkUrlForm">
+                    <div class="border rounded p-3 bg-light">
+                        <div class="d-flex align-items-center gap-2 mb-2">
+                            <input type="url" id="check-url-input" class="form-control form-control-sm" placeholder="输入检测目标 URL，如 http://www.google.com/generate_204">
+                            <button class="btn btn-primary btn-sm flex-shrink-0" onclick="addCheckUrl()">
+                                <i class="bi bi-plus-lg"></i> 添加
+                            </button>
+                        </div>
+                        <div id="check-url-list" class="d-flex flex-wrap gap-1">
+                            {% for cu in check_urls %}
+                            <span class="badge bg-light text-dark border d-flex align-items-center gap-1 py-1 px-2">
+                                <small>{{ cu.url }}</small>
+                                <i class="bi bi-x-circle text-danger" style="cursor:pointer;font-size:0.75rem"
+                                   onclick="deleteCheckUrl({{ cu.id }}, this)"></i>
+                            </span>
+                            {% endfor %}
+                            {% if not check_urls %}
+                            <small class="text-muted">暂无检测目标，请添加</small>
+                            {% endif %}
+                        </div>
+                        <small class="text-muted mt-1 d-block">延迟检测将请求所有目标 URL，取最大延迟值</small>
                     </div>
                 </div>
                 <!-- 订阅列表 -->
@@ -171,10 +200,16 @@
     </div>
 </div>
 
-<!-- 按订阅源 Tab 切换 -->
-{% if subscriptions %}
+<!-- 按订阅源 Tab 切换（只显示有可用代理的订阅源） -->
+{% set available_subs = [] %}
+{% for sub in subscriptions %}
+{% if sub_available_counts.get(sub.url, 0) > 0 %}
+{% if available_subs.append(sub) %}{% endif %}
+{% endif %}
+{% endfor %}
+{% if available_subs %}
 <ul class="nav nav-tabs mb-0" id="subTab" role="tablist">
-    {% for sub in subscriptions %}
+    {% for sub in available_subs %}
     <li class="nav-item" role="presentation" data-bs-toggle="tooltip" data-bs-placement="bottom" title="{{ sub.url }}">
         <button class="nav-link {{ 'active' if loop.index == 1 else '' }}" id="tab-{{ sub.id }}"
                 data-bs-toggle="tab" data-bs-target="#pane-{{ sub.id }}" type="button" role="tab"
@@ -186,7 +221,7 @@
     {% endfor %}
 </ul>
 <div class="tab-content border border-top-0 rounded-bottom p-2 bg-white">
-    {% for sub in subscriptions %}
+    {% for sub in available_subs %}
     <div class="tab-pane fade {{ 'show active' if loop.index == 1 else '' }}" id="pane-{{ sub.id }}" role="tabpanel">
         <div class="d-flex justify-content-end mb-2 gap-1">
             <button class="btn btn-primary btn-sm" onclick="triggerFetchSub({{ sub.id }})">
@@ -242,7 +277,7 @@
 {% else %}
 <div class="card">
     <div class="card-body text-center text-muted py-4">
-        暂无订阅源，请先添加
+        暂无可用代理
     </div>
 </div>
 {% endif %}
@@ -519,6 +554,33 @@ function sortTable(tableId, key, th) {
     tbody.querySelectorAll('tr').forEach(function(row, i) {
         row.children[0].textContent = i + 1;
     });
+}
+
+// ---- 检测目标 URL ----
+async function addCheckUrl() {
+    var input = document.getElementById('check-url-input');
+    var url = input.value.trim();
+    if (!url) { alert('请输入检测目标 URL'); return; }
+    try {
+        const resp = await fetch('/api/check-urls?url=' + encodeURIComponent(url), { method: 'POST' });
+        if (resp.ok) { location.reload(); }
+        else { const err = await resp.json(); alert('添加失败: ' + (err.detail || '')); }
+    } catch (e) { alert('请求失败: ' + e.message); }
+}
+
+async function deleteCheckUrl(id, el) {
+    try {
+        const resp = await fetch('/api/check-urls/' + id, { method: 'DELETE' });
+        if (resp.ok) {
+            var badge = el.parentElement;
+            badge.remove();
+            // 如果列表为空，显示提示
+            var list = document.getElementById('check-url-list');
+            if (!list.querySelector('.badge')) {
+                list.innerHTML = '<small class="text-muted">暂无检测目标，请添加</small>';
+            }
+        }
+    } catch (e) { alert('删除失败: ' + e.message); }
 }
 
 // 初始化 Bootstrap Tooltip
