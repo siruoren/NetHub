@@ -1,0 +1,18 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+  debug: false
+
+database:
+  path: "data/proxy_pool.db"
+
+check:
+  timeout: 5.0
+  max_concurrent: 50
+  latency_threshold: 1500.0
+
+scheduler:
+  fetch_interval: 3600
+  verify_interval: 1800
+  cleanup_interval: 7200
+  max_fail_count: 3
