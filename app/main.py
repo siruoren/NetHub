@@ -1,4 +1,4 @@
-"""ProxyPool 启动入口"""
+"""NetHub 启动入口"""
 
 import uvicorn
 

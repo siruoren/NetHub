@@ -1,4 +1,4 @@
-"""ProxyPool 数据模型"""
+"""NetHub 数据模型"""
 
 from dataclasses import dataclass
 
@@ -54,4 +54,20 @@ class SubscriptionRecord:
     created_at: str  # ISO8601
     empty_days: int  # 连续代理数为0的天数
     total_count: int  # 最新一次拉取的代理地址总数
+    fetch_status: str  # 拉取状态: idle / updating / success / failed
+
+
+@dataclass
+class InstanceSourceRecord:
+    """服务实例源记录 - 从已连接的转发服务实例获取可用节点配置"""
+    id: int
+    base_url: str  # 服务实例地址
+    username: str  # 登录用户名
+    password: str  # 登录密码
+    crontab: str  # crontab 格式的定时表达式
+    latency_threshold: float  # 延迟阈值(ms)
+    max_concurrent: int  # 异步最大并发数
+    enabled: bool  # 是否启用
+    created_at: str  # ISO8601
+    total_count: int  # 最新一次获取的节点总数
     fetch_status: str  # 拉取状态: idle / updating / success / failed

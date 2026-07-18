@@ -307,7 +307,7 @@ def _subscription_response(content: str, content_type: str):
         headers={
             "Content-Disposition": 'attachment; filename="subscription"',
             "Profile-Update-Interval": "24",
-            "Profile-Title": "ProxyPool",
+            "Profile-Title": "NetHub",
         },
     )
 
@@ -369,3 +369,136 @@ async def delete_check_url(url_id: int):
     if checker:
         checker.check_urls = [u["url"] for u in await db.get_check_urls()]
     return {"message": "deleted"}
+
+
+# ---- 服务实例源管理 ----
+
+@router.get("/instance-sources")
+async def get_instance_sources():
+    """获取所有服务实例源"""
+    db = get_db()
+    sources = await db.get_all_instance_sources()
+    return {
+        "total": len(sources),
+        "sources": [_instance_source_to_dict(s) for s in sources],
+    }
+
+
+class InstanceSourceCreate(BaseModel):
+    """添加服务实例源请求体"""
+    base_url: str
+    username: str
+    password: str
+    crontab: Optional[str] = "*/10 * * * *"
+    latency_threshold: Optional[float] = 1500.0
+    max_concurrent: Optional[int] = 50
+
+
+@router.post("/instance-sources")
+async def add_instance_source(req: InstanceSourceCreate):
+    """添加服务实例源"""
+    from fastapi import HTTPException
+    if not req.base_url:
+        raise HTTPException(status_code=400, detail="服务实例地址不能为空")
+    db = get_db()
+    source = await db.add_instance_source(
+        base_url=req.base_url,
+        username=req.username,
+        password=req.password,
+        crontab=req.crontab or "*/10 * * * *",
+        latency_threshold=req.latency_threshold or 1500.0,
+        max_concurrent=req.max_concurrent or 50,
+        enabled=True,
+    )
+    if not source:
+        raise HTTPException(status_code=409, detail="服务实例地址已存在")
+    # 注册定时任务
+    scheduler = get_scheduler()
+    scheduler._add_instance_source_job(source)
+    # 自动触发首次获取
+    asyncio.create_task(scheduler._fetch_single_instance_source(source.id))
+    return _instance_source_to_dict(source)
+
+
+@router.put("/instance-sources/{source_id}")
+async def update_instance_source(source_id: int, base_url: str = None, username: str = None,
+                                  password: str = None, crontab: str = None,
+                                  latency_threshold: float = None, max_concurrent: int = None,
+                                  enabled: bool = None):
+    """更新服务实例源"""
+    from fastapi import HTTPException
+    db = get_db()
+    kwargs = {}
+    if base_url is not None:
+        kwargs["base_url"] = base_url
+    if username is not None:
+        kwargs["username"] = username
+    if password is not None:
+        kwargs["password"] = password
+    if crontab is not None:
+        kwargs["crontab"] = crontab
+    if latency_threshold is not None:
+        kwargs["latency_threshold"] = latency_threshold
+    if max_concurrent is not None:
+        kwargs["max_concurrent"] = max_concurrent
+    if enabled is not None:
+        kwargs["enabled"] = enabled
+
+    success = await db.update_instance_source(source_id, **kwargs)
+    if not success:
+        raise HTTPException(status_code=404, detail="服务实例源不存在或无更新")
+    # 刷新定时任务
+    source = await db.get_instance_source_by_id(source_id)
+    scheduler = get_scheduler()
+    scheduler.refresh_instance_source_job(source)
+
+    if source.enabled:
+        # 启用时自动获取
+        asyncio.create_task(scheduler._fetch_single_instance_source(source.id))
+    else:
+        await db.update_instance_fetch_status(source_id, "idle")
+    return _instance_source_to_dict(source)
+
+
+@router.delete("/instance-sources/{source_id}")
+async def delete_instance_source(source_id: int):
+    """删除服务实例源"""
+    from fastapi import HTTPException
+    db = get_db()
+    success = await db.delete_instance_source(source_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="服务实例源不存在")
+    # 移除定时任务
+    scheduler = get_scheduler()
+    scheduler.remove_instance_source_job(source_id)
+    return {"message": "deleted"}
+
+
+@router.post("/instance-sources/{source_id}/fetch")
+async def manual_fetch_instance_source(source_id: int):
+    """手动触发获取指定服务实例源的已连接节点"""
+    db = get_db()
+    source = await db.get_instance_source_by_id(source_id)
+    if not source:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="服务实例源不存在")
+    scheduler = get_scheduler()
+    asyncio.create_task(scheduler._fetch_single_instance_source(source_id))
+    return {"message": f"已触发实例源 #{source_id} 的获取任务"}
+
+
+def _instance_source_to_dict(source) -> dict:
+    """将 InstanceSourceRecord 转为 API 响应字典"""
+    return {
+        "id": source.id,
+        "base_url": source.base_url,
+        "username": source.username,
+        "password": source.password,
+        "crontab": source.crontab,
+        "latency_threshold": source.latency_threshold,
+        "max_concurrent": source.max_concurrent,
+        "enabled": source.enabled,
+        "created_at": source.created_at,
+        "total_count": source.total_count,
+        "fetch_status": source.fetch_status,
+    }

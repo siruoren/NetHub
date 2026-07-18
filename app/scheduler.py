@@ -11,13 +11,13 @@ from apscheduler.triggers.cron import CronTrigger
 from app.checker import ProxyChecker
 from app.config import AppConfig
 from app.database import ProxyDatabase
-from app.parser import fetch_subscription, parse_subscription
+from app.parser import fetch_subscription, parse_subscription, fetch_connected_proxies
 
 logger = logging.getLogger(__name__)
 
 
 class TaskScheduler:
-    """代理池定时任务调度器"""
+    """节点池定时任务调度器"""
 
     def __init__(self, config: AppConfig, db: ProxyDatabase, checker: ProxyChecker):
         self.config = config
@@ -54,6 +54,7 @@ class TaskScheduler:
 
         # 启动后注册订阅任务
         asyncio.create_task(self._register_subscription_jobs())
+        asyncio.create_task(self._register_instance_source_jobs())
 
     async def _register_subscription_jobs(self) -> None:
         """从数据库加载订阅源并注册 crontab 定时任务"""
@@ -61,6 +62,13 @@ class TaskScheduler:
         for sub in subs:
             self._add_subscription_job(sub)
         logger.info("已注册 %d 个订阅拉取任务", len(subs))
+
+    async def _register_instance_source_jobs(self) -> None:
+        """从数据库加载服务实例源并注册 crontab 定时任务"""
+        sources = await self.db.get_enabled_instance_sources()
+        for source in sources:
+            self._add_instance_source_job(source)
+        logger.info("已注册 %d 个实例源获取任务", len(sources))
 
     def _add_subscription_job(self, sub) -> None:
         """为单个订阅注册 crontab 定时任务"""
@@ -203,6 +211,9 @@ class TaskScheduler:
 
             for sub in subs:
                 await self._fetch_single_subscription(sub.id)
+
+            # 同时获取服务实例源
+            await self.fetch_all_instance_sources()
         except Exception as e:
             logger.error("拉取任务异常: %s", e, exc_info=True)
         finally:
@@ -280,6 +291,133 @@ class TaskScheduler:
 
         self._last_verify_time = datetime.now(timezone.utc).isoformat()
         logger.info("订阅 #%d 验证完成: 成功 %d, 失败 %d", sub_id, success_count, fail_count)
+
+    # ---- 服务实例源管理 ----
+
+    def _add_instance_source_job(self, source) -> None:
+        """为单个服务实例源注册 crontab 定时任务"""
+        job_id = f"fetch_instance_{source.id}"
+        try:
+            if self.scheduler.get_job(job_id):
+                self.scheduler.remove_job(job_id)
+
+            parts = source.crontab.strip().split()
+            if len(parts) != 5:
+                logger.error("服务实例源 %d crontab 格式错误: %s", source.id, source.crontab)
+                return
+
+            trigger = CronTrigger(
+                minute=parts[0], hour=parts[1], day=parts[2],
+                month=parts[3], day_of_week=parts[4],
+            )
+            self.scheduler.add_job(
+                self._fetch_single_instance_source,
+                trigger=trigger,
+                id=job_id,
+                name=f"获取实例源 #{source.id}",
+                args=[source.id],
+            )
+            logger.info("注册实例源任务 #%d: crontab=%s", source.id, source.crontab)
+        except Exception as e:
+            logger.error("注册实例源任务 #%d 失败: %s", source.id, e)
+
+    def remove_instance_source_job(self, source_id: int) -> None:
+        """移除服务实例源定时任务"""
+        job_id = f"fetch_instance_{source_id}"
+        if self.scheduler.get_job(job_id):
+            self.scheduler.remove_job(job_id)
+
+    def refresh_instance_source_job(self, source) -> None:
+        """刷新服务实例源定时任务（更新 crontab 后调用）"""
+        self.remove_instance_source_job(source.id)
+        if source.enabled:
+            self._add_instance_source_job(source)
+
+    async def _fetch_single_instance_source(self, source_id: int) -> None:
+        """从服务实例获取已连接节点配置并检测入库"""
+        source = await self.db.get_instance_source_by_id(source_id)
+        if not source or not source.enabled:
+            return
+
+        # 实例源的 source 标识
+        source_tag = f"instance:{source.base_url}"
+
+        try:
+            logger.info("开始获取实例源 #%d: %s", source.id, source.base_url)
+            await self.db.update_instance_fetch_status(source_id, "updating")
+
+            proxies = await fetch_connected_proxies(
+                source.base_url, source.username, source.password,
+            )
+
+            if not proxies:
+                logger.warning("实例源 #%d 未获取到任何已连接节点", source.id)
+                await self.db.update_instance_total_count(source_id, 0)
+                await self.db.update_instance_fetch_status(source_id, "success")
+                return
+
+            logger.info("实例源 #%d: 获取到 %d 个节点，开始逐个检测...",
+                        source.id, len(proxies))
+
+            sub_checker = ProxyChecker(
+                check_urls=self.checker.check_urls,
+                timeout=self.config.check.timeout,
+                max_concurrent=source.max_concurrent,
+            )
+
+            threshold = source.latency_threshold
+            added = 0
+            updated = 0
+            skipped = 0
+
+            for proxy in proxies:
+                try:
+                    latency = await sub_checker.check_proxy(proxy.link)
+                except Exception as e:
+                    logger.debug("检测节点 %s 异常，跳过: %s", proxy.name[:30], e)
+                    skipped += 1
+                    continue
+
+                if latency is None:
+                    skipped += 1
+                    existing = await self.db.get_proxy_by_link(proxy.link)
+                    if existing:
+                        await self.db.increment_fail(existing.id)
+                    continue
+
+                if latency <= threshold:
+                    existing = await self.db.get_proxy_by_link(proxy.link)
+                    if existing:
+                        await self.db.update_latency(existing.id, latency)
+                        updated += 1
+                    else:
+                        success = await self.db.insert_proxy(proxy, latency, source_tag)
+                        if success:
+                            added += 1
+                else:
+                    existing = await self.db.get_proxy_by_link(proxy.link)
+                    if existing:
+                        await self.db.increment_fail(existing.id)
+                    skipped += 1
+
+            await self.db.update_instance_total_count(source_id, len(proxies))
+            await self.db.update_instance_fetch_status(source_id, "success")
+
+            self._last_fetch_time = datetime.now(timezone.utc).isoformat()
+            logger.info("实例源 #%d 获取完成: 新增 %d, 更新 %d, 跳过 %d, 总获取 %d",
+                        source.id, added, updated, skipped, len(proxies))
+        except Exception as e:
+            await self.db.update_instance_fetch_status(source_id, "failed")
+            logger.error("获取实例源 #%d 异常: %s", source.id, e, exc_info=True)
+
+    async def fetch_all_instance_sources(self) -> None:
+        """手动触发：获取所有启用的服务实例源的已连接节点"""
+        sources = await self.db.get_enabled_instance_sources()
+        if not sources:
+            logger.warning("没有启用的服务实例源")
+            return
+        for source in sources:
+            await self._fetch_single_instance_source(source.id)
 
     async def cleanup_proxies(self) -> None:
         """清理不合格代理和空订阅源"""

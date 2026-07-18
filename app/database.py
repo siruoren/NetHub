@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import aiosqlite
 
-from app.models import ProxyDBRecord, ProxyInfo, SubscriptionRecord
+from app.models import ProxyDBRecord, ProxyInfo, SubscriptionRecord, InstanceSourceRecord
 
 
 class ProxyDatabase:
@@ -67,6 +67,22 @@ class ProxyDatabase:
                 id    INTEGER PRIMARY KEY AUTOINCREMENT,
                 url   TEXT    NOT NULL UNIQUE
             );
+
+            CREATE TABLE IF NOT EXISTS instance_sources (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                base_url          TEXT    NOT NULL UNIQUE,
+                username          TEXT    NOT NULL DEFAULT '',
+                password          TEXT    NOT NULL DEFAULT '',
+                crontab           TEXT    NOT NULL DEFAULT '*/10 * * * *',
+                latency_threshold REAL    DEFAULT 1500.0,
+                max_concurrent    INTEGER DEFAULT 50,
+                enabled           INTEGER DEFAULT 1,
+                created_at        TEXT    DEFAULT '',
+                total_count       INTEGER DEFAULT 0,
+                fetch_status      TEXT    DEFAULT 'idle'
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_instance_sources_base_url ON instance_sources(base_url);
         """)
         await self._db.commit()
 
@@ -477,3 +493,107 @@ class ProxyDatabase:
                 except aiosqlite.IntegrityError:
                     pass
             await self._db.commit()
+
+    # ---- 服务实例源管理 ----
+
+    def _row_to_instance_source(self, row: aiosqlite.Row) -> InstanceSourceRecord:
+        """将数据库行转为 InstanceSourceRecord"""
+        return InstanceSourceRecord(
+            id=row["id"],
+            base_url=row["base_url"],
+            username=row["username"],
+            password=row["password"],
+            crontab=row["crontab"],
+            latency_threshold=row["latency_threshold"],
+            max_concurrent=row["max_concurrent"],
+            enabled=bool(row["enabled"]),
+            created_at=row["created_at"],
+            total_count=row["total_count"] if "total_count" in row.keys() else 0,
+            fetch_status=row["fetch_status"] if "fetch_status" in row.keys() else "idle",
+        )
+
+    async def add_instance_source(self, base_url: str, username: str, password: str,
+                                   crontab: str = "*/10 * * * *",
+                                   latency_threshold: float = 1500.0,
+                                   max_concurrent: int = 50,
+                                   enabled: bool = True) -> InstanceSourceRecord | None:
+        """添加服务实例源"""
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            cursor = await self._db.execute(
+                """INSERT INTO instance_sources
+                   (base_url, username, password, crontab, latency_threshold, max_concurrent, enabled, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (base_url, username, password, crontab, latency_threshold, max_concurrent, int(enabled), now),
+            )
+            await self._db.commit()
+            return await self.get_instance_source_by_id(cursor.lastrowid)
+        except aiosqlite.IntegrityError:
+            return None
+
+    async def get_instance_source_by_id(self, source_id: int) -> InstanceSourceRecord | None:
+        """根据 ID 获取服务实例源"""
+        cursor = await self._db.execute("SELECT * FROM instance_sources WHERE id = ?", (source_id,))
+        row = await cursor.fetchone()
+        return self._row_to_instance_source(row) if row else None
+
+    async def get_instance_source_by_url(self, base_url: str) -> InstanceSourceRecord | None:
+        """根据 base_url 获取服务实例源"""
+        cursor = await self._db.execute("SELECT * FROM instance_sources WHERE base_url = ?", (base_url,))
+        row = await cursor.fetchone()
+        return self._row_to_instance_source(row) if row else None
+
+    async def get_all_instance_sources(self) -> list[InstanceSourceRecord]:
+        """获取所有服务实例源"""
+        cursor = await self._db.execute("SELECT * FROM instance_sources ORDER BY id ASC")
+        rows = await cursor.fetchall()
+        return [self._row_to_instance_source(row) for row in rows]
+
+    async def get_enabled_instance_sources(self) -> list[InstanceSourceRecord]:
+        """获取所有启用的服务实例源"""
+        cursor = await self._db.execute("SELECT * FROM instance_sources WHERE enabled = 1 ORDER BY id ASC")
+        rows = await cursor.fetchall()
+        return [self._row_to_instance_source(row) for row in rows]
+
+    async def update_instance_source(self, source_id: int, **kwargs) -> bool:
+        """更新服务实例源，支持部分字段更新"""
+        allowed = {"base_url", "username", "password", "crontab", "latency_threshold", "max_concurrent", "enabled"}
+        updates = {}
+        for k, v in kwargs.items():
+            if k in allowed:
+                if k == "enabled":
+                    updates[k] = int(v)
+                else:
+                    updates[k] = v
+        if not updates:
+            return False
+
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [source_id]
+        cursor = await self._db.execute(
+            f"UPDATE instance_sources SET {set_clause} WHERE id = ?", values
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def delete_instance_source(self, source_id: int) -> bool:
+        """删除服务实例源"""
+        cursor = await self._db.execute("DELETE FROM instance_sources WHERE id = ?", (source_id,))
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def update_instance_total_count(self, source_id: int, count: int) -> None:
+        """更新服务实例源最新一次获取的节点总数"""
+        await self._db.execute(
+            "UPDATE instance_sources SET total_count = ? WHERE id = ?",
+            (count, source_id),
+        )
+        await self._db.commit()
+
+    async def update_instance_fetch_status(self, source_id: int, status: str) -> None:
+        """更新服务实例源拉取状态: idle / updating / success / failed"""
+        await self._db.execute(
+            "UPDATE instance_sources SET fetch_status = ? WHERE id = ?",
+            (status, source_id),
+        )
+        await self._db.commit()

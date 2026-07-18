@@ -45,7 +45,7 @@ def generate_clash_subscription(proxies: list[ProxyDBRecord]) -> str:
         "proxies": proxy_list,
         "proxy-groups": [
             {
-                "name": "ProxyPool",
+                "name": "NetHub",
                 "type": "url-test",
                 "proxies": proxy_names if proxy_names else ["DIRECT"],
                 "url": "http://www.gstatic.com/generate_204",
@@ -54,7 +54,7 @@ def generate_clash_subscription(proxies: list[ProxyDBRecord]) -> str:
             {
                 "name": "Proxy",
                 "type": "select",
-                "proxies": ["ProxyPool", "DIRECT"] + proxy_names,
+                "proxies": ["NetHub", "DIRECT"] + proxy_names,
             },
         ],
         "rules": [

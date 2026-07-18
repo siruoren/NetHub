@@ -6,6 +6,7 @@ from __future__ import annotations
 """
 
 import base64
+import difflib
 import json
 import logging
 from urllib.parse import urlparse, unquote
@@ -211,3 +212,205 @@ def _parse_hysteria2(line: str) -> ProxyInfo | None:
         )
     except Exception:
         return None
+
+
+# ---- 服务实例 API 获取 ----
+
+async def instance_login(base_url: str, username: str, password: str,
+                         timeout: float = 10.0) -> tuple[aiohttp.ClientSession, dict]:
+    """登录服务实例，返回 (session, headers)"""
+    session = aiohttp.ClientSession()
+    headers = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
+    try:
+        async with session.post(
+            f"{base_url}/api/login",
+            json={"username": username, "password": password},
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=timeout),
+        ) as resp:
+            data = await resp.json()
+            if data.get("code") != "SUCCESS":
+                await session.close()
+                raise Exception(f"登录失败: {data}")
+            token = data["data"]["token"]
+            headers["Authorization"] = token
+            return session, headers
+    except Exception:
+        await session.close()
+        raise
+
+
+async def get_instance_connected_nodes(
+    session: aiohttp.ClientSession, headers: dict, base_url: str,
+    timeout: float = 10.0,
+) -> tuple[list[dict], list[dict]]:
+    """获取服务实例已连接节点和订阅列表
+
+    返回 (connected_nodes, subscriptions)
+    connected_nodes: [{"id", "sub_index", "name", "address", "net", "outbound"}, ...]
+    subscriptions: 原始订阅列表
+    """
+    async with session.get(
+        f"{base_url}/api/touch", headers=headers,
+        timeout=aiohttp.ClientTimeout(total=timeout),
+    ) as resp:
+        data = await resp.json()
+
+    connected = data["data"]["touch"]["connectedServer"]
+    subscriptions = data["data"]["touch"]["subscriptions"]
+
+    connected_nodes = []
+    for conn in connected:
+        node_id = conn["id"]
+        sub_index = conn["sub"]
+        outbound = conn.get("outbound", "proxy")
+
+        if sub_index < 0:
+            logger.debug("跳过手动添加的服务器 id=%d（无订阅源）", node_id)
+            continue
+
+        if sub_index < len(subscriptions):
+            sub = subscriptions[sub_index]
+            for server in sub.get("servers", []):
+                if server["id"] == node_id:
+                    connected_nodes.append({
+                        "id": node_id,
+                        "sub_index": sub_index,
+                        "name": server.get("name"),
+                        "address": server.get("address"),
+                        "net": server.get("net"),
+                        "outbound": outbound,
+                    })
+                    break
+    return connected_nodes, subscriptions
+
+
+def _normalize_string(s: str) -> str:
+    """标准化字符串用于模糊匹配"""
+    if not s:
+        return ""
+    return s.replace(" ", "").replace("-", "").replace("_", "").lower()
+
+
+def _strings_similar(s1: str, s2: str, threshold: float = 0.5) -> bool:
+    """判断两个字符串是否相似"""
+    if not s1 or not s2:
+        return False
+    s1_norm = _normalize_string(s1)
+    s2_norm = _normalize_string(s2)
+    if not s1_norm or not s2_norm:
+        return False
+    if s1_norm in s2_norm or s2_norm in s1_norm:
+        return True
+    ratio = difflib.SequenceMatcher(None, s1_norm, s2_norm).ratio()
+    return ratio >= threshold
+
+
+async def fetch_connected_proxies(
+    base_url: str, username: str, password: str,
+) -> list[ProxyInfo]:
+    """从服务实例获取所有已连接节点的分享链接
+
+    流程：
+    1. 登录服务实例
+    2. 获取已连接节点列表和订阅列表
+    3. 遍历每个订阅源，拉取并解析节点列表
+    4. 将已连接节点与订阅中的节点进行匹配（名称+地址模糊匹配）
+    5. 返回匹配成功的 ProxyInfo 列表
+    """
+    session, headers = await instance_login(base_url, username, password)
+    try:
+        connected_nodes, subscriptions = await get_instance_connected_nodes(
+            session, headers, base_url,
+        )
+        logger.info("服务实例 %s: 已连接 %d 个节点, 共 %d 个订阅源",
+                     base_url, len(connected_nodes), len(subscriptions))
+
+        matched_proxies: list[ProxyInfo] = []
+        matched_node_ids: set[int] = set()
+
+        for sub_index, sub in enumerate(subscriptions):
+            sub_address = sub.get("address")
+            if not sub_address:
+                continue
+
+            # 拉取订阅内容
+            try:
+                async with session.get(
+                    sub_address, headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=15.0),
+                ) as sub_resp:
+                    content = await sub_resp.text()
+                share_links = parse_subscription(content)
+                logger.info("订阅源 %d: 解析到 %d 个节点", sub_index, len(share_links))
+            except Exception as e:
+                logger.warning("订阅源 %d 加载失败: %s", sub_index, e)
+                continue
+
+            # 该订阅源下的已连接节点
+            sub_connected = [
+                n for n in connected_nodes
+                if n["sub_index"] == sub_index and n["id"] not in matched_node_ids
+            ]
+
+            # 第一次匹配：名称+地址模糊匹配
+            unmatched = []
+            for conn_node in sub_connected:
+                if conn_node["id"] in matched_node_ids:
+                    continue
+                best_match = None
+                best_quality = 0
+                for link_info in share_links:
+                    quality = 0
+                    name_sim = _strings_similar(conn_node["name"], link_info.name)
+                    addr_sim = _strings_similar(conn_node["address"], link_info.address)
+                    if name_sim and addr_sim:
+                        quality = 3
+                    elif name_sim:
+                        quality = 2
+                    elif addr_sim:
+                        quality = 1
+                    if quality > best_quality:
+                        best_quality = quality
+                        best_match = link_info
+
+                if best_match and best_quality >= 1:
+                    matched_node_ids.add(conn_node["id"])
+                    matched_proxies.append(best_match)
+                else:
+                    unmatched.append(conn_node)
+
+            # 第二次匹配：地址精确匹配 或 地址模糊+端口匹配
+            for conn_node in unmatched:
+                if conn_node["id"] in matched_node_ids:
+                    continue
+                best_match = None
+                best_quality = 0
+                for link_info in share_links:
+                    quality = 0
+                    addr_exact = (conn_node["address"] and link_info.address
+                                  and conn_node["address"] == link_info.address)
+                    addr_fuzzy = _strings_similar(conn_node["address"], link_info.address, 0.7)
+                    port_match = (conn_node.get("net") and link_info.port
+                                  and str(conn_node["net"]) == str(link_info.port))
+                    if addr_exact:
+                        quality = 4
+                    elif addr_fuzzy and port_match:
+                        quality = 3
+                    elif addr_fuzzy:
+                        quality = 2
+                    elif port_match and _strings_similar(conn_node["name"], link_info.name, 0.3):
+                        quality = 1
+                    if quality > best_quality:
+                        best_quality = quality
+                        best_match = link_info
+
+                if best_match and best_quality >= 1:
+                    matched_node_ids.add(conn_node["id"])
+                    matched_proxies.append(best_match)
+
+        logger.info("服务实例 %s: 共匹配到 %d 个已连接节点配置",
+                     base_url, len(matched_proxies))
+        return matched_proxies
+    finally:
+        await session.close()

@@ -89,9 +89,9 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
 
     # 创建 FastAPI 实例
     app = FastAPI(
-        title="ProxyPool",
+        title="NetHub",
         version="1.0.0",
-        description="代理池管理系统",
+        description="节点池管理系统",
     )
 
     # 注册生命周期事件
