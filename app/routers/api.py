@@ -48,20 +48,28 @@ async def delete_proxy(proxy_id: int):
 
 @router.get("/subscription/v2ray")
 async def v2ray_subscription():
-    """获取 v2ray 格式订阅（base64 编码）"""
+    """获取 v2ray 格式订阅（base64 编码）
+
+    订阅源代理：仅输出延迟达标且未失败的
+    实例源代理：无论检测是否通过均输出
+    """
     db = get_db()
     config = get_config()
-    proxies = await db.get_available_proxies(config.check.latency_threshold)
+    proxies = await db.get_subscription_output_proxies(config.check.latency_threshold)
     content = generate_v2ray_subscription(proxies)
     return _subscription_response(content, "text/plain")
 
 
 @router.get("/subscription/clash")
 async def clash_subscription():
-    """获取 Clash 格式订阅（YAML）"""
+    """获取 Clash 格式订阅（YAML）
+
+    订阅源代理：仅输出延迟达标且未失败的
+    实例源代理：无论检测是否通过均输出
+    """
     db = get_db()
     config = get_config()
-    proxies = await db.get_available_proxies(config.check.latency_threshold)
+    proxies = await db.get_subscription_output_proxies(config.check.latency_threshold)
     content = generate_clash_subscription(proxies)
     return _subscription_response(content, "text/yaml")
 

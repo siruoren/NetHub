@@ -1,6 +1,7 @@
 from __future__ import annotations
 """Web UI 页面路由 - Jinja2 模板渲染"""
 
+import asyncio
 import json
 import logging
 from dataclasses import asdict
@@ -22,15 +23,18 @@ async def index(request: Request):
     templates = get_templates()
     scheduler = get_scheduler()
 
-    proxies = await db.get_all_proxies()
-    stats = await db.get_stats()
-    subscriptions = await db.get_all_subscriptions()
-    # 按来源分组的可用代理
-    grouped = await db.get_proxies_grouped_by_source(config.check.latency_threshold)
-    # 检测目标 URL
-    check_urls = await db.get_check_urls()
-    # 服务实例源
-    instance_sources = await db.get_all_instance_sources()
+    # 并行查询所有数据
+    results = await asyncio.gather(
+        db.get_all_proxies(),
+        db.get_stats(),
+        db.get_all_subscriptions(),
+        db.get_proxies_grouped_by_source(config.check.latency_threshold),
+        db.get_check_urls(),
+        db.get_all_instance_sources(),
+    )
+    proxies, stats, subscriptions, grouped, check_urls, instance_sources = results
+
+    # 序列化
     instance_sources_json = json.dumps(
         [dict(asdict(s)) for s in instance_sources],
         ensure_ascii=False,

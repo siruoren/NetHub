@@ -173,6 +173,37 @@ class ProxyDatabase:
         )
         await self._db.commit()
 
+    async def batch_update_latency(self, updates: list[tuple[int, float]]) -> None:
+        """批量更新延迟并重置 fail_count
+
+        updates: [(proxy_id, latency_ms), ...]
+        单次 commit，避免逐条提交的性能开销
+        """
+        if not updates:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        await self._db.executemany(
+            """UPDATE proxies
+               SET latency_ms = ?, fail_count = 0,
+                   last_check_time = ?, last_success_time = ?
+               WHERE id = ?""",
+            [(lat, now, now, pid) for pid, lat in updates],
+        )
+        await self._db.commit()
+
+    async def batch_increment_fail(self, proxy_ids: list[int]) -> None:
+        """批量 fail_count + 1，单次 commit"""
+        if not proxy_ids:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        await self._db.executemany(
+            """UPDATE proxies
+               SET fail_count = fail_count + 1, last_check_time = ?
+               WHERE id = ?""",
+            [(now, pid) for pid in proxy_ids],
+        )
+        await self._db.commit()
+
     async def increment_fail(self, proxy_id: int) -> int:
         """fail_count + 1，返回当前值"""
         now = datetime.now(timezone.utc).isoformat()
@@ -242,6 +273,27 @@ class ProxyDatabase:
         cursor = await self._db.execute(
             """SELECT * FROM proxies
                WHERE latency_ms > 0 AND latency_ms <= ? AND fail_count = 0
+               ORDER BY latency_ms ASC""",
+            (max_latency,),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_record(row) for row in rows]
+
+    async def get_subscription_output_proxies(self, max_latency: float) -> list[ProxyDBRecord]:
+        """获取对外订阅输出代理列表
+
+        订阅源代理：仅输出延迟达标且未失败的
+        实例源代理（source 以 'instance:' 开头）：无论检测是否通过均输出
+        """
+        cursor = await self._db.execute(
+            """SELECT * FROM proxies
+               WHERE (
+                   /* 订阅源代理：延迟达标且未失败 */
+                   (source NOT LIKE 'instance:%' AND latency_ms > 0 AND latency_ms <= ? AND fail_count = 0)
+                   OR
+                   /* 实例源代理：全部输出 */
+                   (source LIKE 'instance:%')
+               )
                ORDER BY latency_ms ASC""",
             (max_latency,),
         )
