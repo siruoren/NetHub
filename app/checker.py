@@ -1,39 +1,51 @@
 from __future__ import annotations
-"""代理延迟检测模块 - 模拟通过代理服务器访问目标 URL 的真实网络延迟
+"""代理延迟检测模块 - 通过 TCP/TLS 连接检测代理服务器响应速度
 
 检测策略：
-- 通过代理服务器发起 HTTP(S) 请求到多个目标检测 URL
-- 测量完整的请求延迟（DNS 解析 + TCP 连接 + TLS 握手 + HTTP 请求/响应）
-- 多个目标 URL 取最大延迟值，确保所有目标均可达
-- 使用 aiohttp 的 HTTP CONNECT 隧道支持 HTTPS 目标检测
+- 对代理服务器发起 TCP 连接，测量连接建立耗时
+- 若协议使用 TLS（vmess+tls / vless+tls / trojan / hysteria2），
+  则在 TCP 连接基础上完成 TLS 握手，测量总耗时
+- TCP+TLS 延迟与实际上网体验高度相关：它反映到代理服务器的网络往返时间
+  和服务端处理能力，是真实代理请求延迟的主要组成部分
 - 使用 asyncio.Semaphore 控制并发数
+- 检测目标 URL 存入数据库供页面展示和未来扩展
 """
 
 import asyncio
 import json
 import logging
+import ssl
 import time
 import base64
-from urllib.parse import urlparse
-
-import aiohttp
+from dataclasses import dataclass
+from urllib.parse import urlparse, unquote
 
 from app.models import ProxyInfo
 
 logger = logging.getLogger(__name__)
 
-# 默认检测目标 URL（数据库为空时使用）
+# 默认检测目标 URL（数据库为空时使用，页面展示用）
 DEFAULT_CHECK_URLS = [
     "https://www.google.com/generate_204",
     "https://www.gstatic.com/generate_204",
 ]
 
 
-class ProxyChecker:
-    """基于 HTTP 请求的并发代理延迟检测器
+@dataclass
+class ProxyConnInfo:
+    """代理服务器连接信息"""
+    host: str
+    port: int
+    use_tls: bool
+    protocol: str
 
-    模拟真实上网场景：通过代理访问目标网站，测量完整请求延迟。
-    这比单纯 TCP/TLS 连接检测更贴近实际使用体验。
+
+class ProxyChecker:
+    """基于 asyncio 的并发代理延迟检测器
+
+    通过 TCP/TLS 连接测试代理服务器响应速度。
+    延迟值 = TCP 连接耗时 (+ TLS 握手耗时)，单位毫秒。
+    该值与实际通过代理浏览网页的延迟高度正相关。
     """
 
     def __init__(self, check_urls: list[str], timeout: float, max_concurrent: int):
@@ -44,46 +56,45 @@ class ProxyChecker:
     async def check_proxy(self, link: str) -> float | None:
         """检测单个代理的延迟
 
-        通过代理请求所有目标 URL，返回最大延迟毫秒数。
-        所有目标都失败则返回 None。
+        通过 TCP/TLS 连接测试代理服务器响应速度。
+        返回连接建立耗时（毫秒），失败返回 None。
         """
-        proxy_url = self._link_to_proxy_url(link)
-        if not proxy_url:
+        conn_info = self._parse_link(link)
+        if not conn_info:
             return None
 
         async with self.semaphore:
-            return await self._check_multi_targets(proxy_url)
+            return await self._check_connectivity(conn_info)
 
-    async def _check_multi_targets(self, proxy_url: str) -> float | None:
-        """通过代理请求所有目标 URL，取最大延迟"""
-        if not self.check_urls:
-            return None
-
-        max_latency = None
-        for target_url in self.check_urls:
-            latency = await self._http_latency_check(proxy_url, target_url)
-            if latency is not None:
-                if max_latency is None or latency > max_latency:
-                    max_latency = latency
-
-        return max_latency
-
-    async def _http_latency_check(self, proxy_url: str, target_url: str) -> float | None:
-        """通过代理发送 HTTP(S) 请求检测延迟
-
-        使用 aiohttp 的 HTTP CONNECT 隧道支持 HTTPS 目标：
-        - 对于 HTTPS 目标：proxy_url 格式为 http://host:port，
-          aiohttp 自动通过 CONNECT 方法建立 TLS 隧道
-        - 对于 HTTP 目标：直接通过代理转发请求
-        """
+    async def _check_connectivity(self, info: ProxyConnInfo) -> float | None:
+        """测试代理服务器 TCP/TLS 连通性并测量延迟"""
         start = time.monotonic()
         try:
-            timeout = aiohttp.ClientTimeout(total=self.timeout)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(target_url, proxy=proxy_url) as resp:
-                    await resp.read()
-                    elapsed = (time.monotonic() - start) * 1000
-                    return round(elapsed, 1)
+            if info.use_tls:
+                # TLS 协议：TCP 连接 + TLS 握手，更贴近真实代理请求体验
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                _, writer = await asyncio.wait_for(
+                    asyncio.open_connection(
+                        info.host, info.port, ssl=ctx, server_hostname=info.host
+                    ),
+                    timeout=self.timeout,
+                )
+            else:
+                # 非 TLS 协议：仅 TCP 连接
+                _, writer = await asyncio.wait_for(
+                    asyncio.open_connection(info.host, info.port),
+                    timeout=self.timeout,
+                )
+
+            elapsed = (time.monotonic() - start) * 1000
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+            return round(elapsed, 1)
         except Exception:
             return None
 
@@ -106,31 +117,26 @@ class ProxyChecker:
         links = [p.link for p in proxies]
         return await self.check_batch(links)
 
-    # ---- 协议链接转代理 URL ----
+    # ---- 协议解析 ----
 
-    def _link_to_proxy_url(self, link: str) -> str | None:
-        """将分享链接转换为 aiohttp 可用的代理 URL 格式
-
-        aiohttp 代理格式: http://host:port
-        无论是 HTTP 还是 HTTPS 协议的代理，代理 URL 统一使用 http://
-        aiohttp 会自动通过 CONNECT 方法为 HTTPS 目标建立隧道
-        """
+    def _parse_link(self, link: str) -> ProxyConnInfo | None:
+        """解析分享链接，提取连接信息（地址、端口、是否 TLS）"""
         try:
             if link.startswith("vmess://"):
-                return self._vmess_to_proxy_url(link)
+                return self._parse_vmess(link)
             elif link.startswith("vless://"):
-                return self._vless_to_proxy_url(link)
+                return self._parse_vless(link)
             elif link.startswith("trojan://"):
-                return self._trojan_to_proxy_url(link)
+                return self._parse_trojan(link)
             elif link.startswith("ss://"):
-                return self._ss_to_proxy_url(link)
+                return self._parse_ss(link)
             elif link.startswith("hysteria2://") or link.startswith("hy2://"):
-                return self._hysteria2_to_proxy_url(link)
+                return self._parse_hysteria2(link)
         except Exception:
             pass
         return None
 
-    def _vmess_to_proxy_url(self, link: str) -> str | None:
+    def _parse_vmess(self, link: str) -> ProxyConnInfo | None:
         try:
             config_b64 = link[8:]
             padding = 4 - len(config_b64) % 4
@@ -139,36 +145,51 @@ class ProxyChecker:
             config_json = base64.b64decode(config_b64).decode("utf-8")
             config = json.loads(config_json)
             address = config.get("add", "")
-            port = str(config.get("port", ""))
+            port = config.get("port", 0)
             if not address or not port:
                 return None
-            return f"http://{address}:{port}"
+            # vmess 的 tls 字段为 "tls" 或 "reality" 时使用 TLS
+            use_tls = config.get("tls", "") in ("tls", "reality")
+            return ProxyConnInfo(
+                host=address, port=int(port),
+                use_tls=use_tls, protocol="vmess",
+            )
         except Exception:
             return None
 
-    def _vless_to_proxy_url(self, link: str) -> str | None:
+    def _parse_vless(self, link: str) -> ProxyConnInfo | None:
         try:
             parsed = urlparse(link)
             address = parsed.hostname or ""
-            port = str(parsed.port) if parsed.port else ""
+            port = parsed.port or 0
             if not address or not port:
                 return None
-            return f"http://{address}:{port}"
+            params = dict(pair.split("=", 1) for pair in parsed.query.split("&") if "=" in pair)
+            security = params.get("security", "none")
+            use_tls = security in ("tls", "reality")
+            return ProxyConnInfo(
+                host=address, port=int(port),
+                use_tls=use_tls, protocol="vless",
+            )
         except Exception:
             return None
 
-    def _trojan_to_proxy_url(self, link: str) -> str | None:
+    def _parse_trojan(self, link: str) -> ProxyConnInfo | None:
         try:
             parsed = urlparse(link)
             address = parsed.hostname or ""
-            port = str(parsed.port) if parsed.port else ""
+            port = parsed.port or 0
             if not address or not port:
                 return None
-            return f"http://{address}:{port}"
+            # trojan 默认使用 TLS
+            return ProxyConnInfo(
+                host=address, port=int(port),
+                use_tls=True, protocol="trojan",
+            )
         except Exception:
             return None
 
-    def _ss_to_proxy_url(self, link: str) -> str | None:
+    def _parse_ss(self, link: str) -> ProxyConnInfo | None:
         try:
             line = link
             if "#" in line:
@@ -176,7 +197,7 @@ class ProxyChecker:
 
             ss_content = line[5:]
             address = ""
-            port = ""
+            port = 0
 
             if "@" in ss_content:
                 at_idx = ss_content.rindex("@")
@@ -184,9 +205,10 @@ class ProxyChecker:
                 if addr_port.startswith("["):
                     bracket_end = addr_port.index("]")
                     address = addr_port[1:bracket_end]
-                    port = addr_port[bracket_end + 2:] if bracket_end + 2 < len(addr_port) else ""
+                    port = int(addr_port[bracket_end + 2:]) if bracket_end + 2 < len(addr_port) else 0
                 elif ":" in addr_port:
-                    address, port = addr_port.rsplit(":", 1)
+                    address, port_str = addr_port.rsplit(":", 1)
+                    port = int(port_str)
             else:
                 try:
                     padding = 4 - len(ss_content) % 4
@@ -196,25 +218,34 @@ class ProxyChecker:
                     if "@" in decoded:
                         _, addr_port = decoded.rsplit("@", 1)
                         if ":" in addr_port:
-                            address, port = addr_port.rsplit(":", 1)
+                            address, port_str = addr_port.rsplit(":", 1)
+                            port = int(port_str)
                 except Exception:
                     pass
 
             if not address or not port:
                 return None
-            return f"http://{address}:{port}"
+            return ProxyConnInfo(
+                host=address, port=port,
+                use_tls=False, protocol="ss",
+            )
         except Exception:
             return None
 
-    def _hysteria2_to_proxy_url(self, link: str) -> str | None:
+    def _parse_hysteria2(self, link: str) -> ProxyConnInfo | None:
         try:
             prefix_len = len("hysteria2://") if link.startswith("hysteria2://") else len("hy2://")
             rest = link[prefix_len:]
+            # 构造标准 URL 以便 urlparse 解析
             parsed = urlparse("http://" + rest)
             address = parsed.hostname or ""
-            port = str(parsed.port) if parsed.port else ""
+            port = parsed.port or 0
             if not address or not port:
                 return None
-            return f"http://{address}:{port}"
+            # hysteria2 默认使用 TLS
+            return ProxyConnInfo(
+                host=address, port=int(port),
+                use_tls=True, protocol="hysteria2",
+            )
         except Exception:
             return None
