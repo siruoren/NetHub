@@ -39,6 +39,11 @@ async def index(request: Request):
     sub_available_counts = {}
     for sub in subscriptions:
         sub_available_counts[sub.url] = len(grouped.get(sub.url, []))
+    # 计算每个服务实例源的可用代理数量
+    inst_available_counts = {}
+    for inst in instance_sources:
+        source_tag = f"instance:{inst.base_url}"
+        inst_available_counts[inst.id] = len(grouped.get(source_tag, []))
     subscriptions_json = json.dumps(
         [dict(asdict(s), available_count=sub_available_counts.get(s.url, 0)) for s in subscriptions],
         ensure_ascii=False,
@@ -56,6 +61,7 @@ async def index(request: Request):
             "check_urls": check_urls,
             "instance_sources": instance_sources,
             "instance_sources_json": instance_sources_json,
+            "inst_available_counts": inst_available_counts,
             "grouped": grouped,
             "latency_threshold": config.check.latency_threshold,
             "last_fetch_time": scheduler.last_fetch_time,
