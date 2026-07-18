@@ -79,6 +79,15 @@ class ProxyDatabase:
         except Exception:
             pass
 
+        # 迁移：将旧的 http:// 检测 URL 升级为 https://
+        try:
+            await self._db.execute(
+                "UPDATE check_urls SET url = REPLACE(url, 'http://', 'https://') WHERE url LIKE 'http://%'"
+            )
+            await self._db.commit()
+        except Exception:
+            pass
+
         # 兼容旧表：添加 empty_days 和 total_count 列（如不存在）
         try:
             await self._db.execute("ALTER TABLE subscriptions ADD COLUMN empty_days INTEGER DEFAULT 0")

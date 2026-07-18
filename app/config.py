@@ -20,10 +20,6 @@ class DatabaseConfig:
 
 @dataclass
 class CheckConfig:
-    urls: list = field(default_factory=lambda: [
-        "http://www.google.com/generate_204",
-        "http://www.gstatic.com/generate_204",
-    ])
     timeout: float = 5.0
     max_concurrent: int = 50
     latency_threshold: float = 1500.0
@@ -38,18 +34,11 @@ class SchedulerConfig:
 
 
 @dataclass
-class ResourcesConfig:
-    subscription_file: str = "resources/Subscription.txt"
-    domain_check_file: str = "resources/domain_check.txt"
-
-
-@dataclass
 class AppConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     check: CheckConfig = field(default_factory=CheckConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
-    resources: ResourcesConfig = field(default_factory=ResourcesConfig)
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -67,22 +56,13 @@ def _dict_to_config(data: dict) -> AppConfig:
     """将字典转为 AppConfig dataclass"""
     server = ServerConfig(**data.get("server", {}))
     database = DatabaseConfig(**data.get("database", {}))
-    check_data = data.get("check", {})
-    default_check = CheckConfig()
-    check = CheckConfig(
-        urls=check_data.get("urls", default_check.urls),
-        timeout=check_data.get("timeout", default_check.timeout),
-        max_concurrent=check_data.get("max_concurrent", default_check.max_concurrent),
-        latency_threshold=check_data.get("latency_threshold", default_check.latency_threshold),
-    )
+    check = CheckConfig(**data.get("check", {}))
     scheduler = SchedulerConfig(**data.get("scheduler", {}))
-    resources = ResourcesConfig(**data.get("resources", {}))
     return AppConfig(
         server=server,
         database=database,
         check=check,
         scheduler=scheduler,
-        resources=resources,
     )
 
 
@@ -92,23 +72,15 @@ def load_config(path: str = "config.yaml") -> AppConfig:
         "server": {"host": "0.0.0.0", "port": 8080, "debug": False},
         "database": {"path": "data/proxy_pool.db"},
         "check": {
-            "urls": [
-                "http://www.google.com/generate_204",
-                "http://www.gstatic.com/generate_204",
-            ],
             "timeout": 5.0,
             "max_concurrent": 50,
-            "latency_threshold": 3000.0,
+            "latency_threshold": 1500.0,
         },
         "scheduler": {
             "fetch_interval": 3600,
             "verify_interval": 1800,
             "cleanup_interval": 7200,
             "max_fail_count": 3,
-        },
-        "resources": {
-            "subscription_file": "resources/Subscription.txt",
-            "domain_check_file": "resources/domain_check.txt",
         },
     }
 

@@ -1,11 +1,12 @@
 from __future__ import annotations
-"""代理延迟检测模块 - 基于 HTTP 请求检测代理到多个目标 URL 的延迟
+"""代理延迟检测模块 - 模拟通过代理服务器访问目标 URL 的真实网络延迟
 
 检测策略：
-- 通过代理发起 HTTP 请求到多个目标 URL
-- 每个代理检测所有目标 URL，延迟取最大值
+- 通过代理服务器发起 HTTP(S) 请求到多个目标检测 URL
+- 测量完整的请求延迟（DNS 解析 + TCP 连接 + TLS 握手 + HTTP 请求/响应）
+- 多个目标 URL 取最大延迟值，确保所有目标均可达
+- 使用 aiohttp 的 HTTP CONNECT 隧道支持 HTTPS 目标检测
 - 使用 asyncio.Semaphore 控制并发数
-- 单个目标请求失败不影响其他目标的检测
 """
 
 import asyncio
@@ -13,7 +14,7 @@ import json
 import logging
 import time
 import base64
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -21,12 +22,22 @@ from app.models import ProxyInfo
 
 logger = logging.getLogger(__name__)
 
+# 默认检测目标 URL（数据库为空时使用）
+DEFAULT_CHECK_URLS = [
+    "https://www.google.com/generate_204",
+    "https://www.gstatic.com/generate_204",
+]
+
 
 class ProxyChecker:
-    """基于 asyncio 的并发代理延迟检测器"""
+    """基于 HTTP 请求的并发代理延迟检测器
+
+    模拟真实上网场景：通过代理访问目标网站，测量完整请求延迟。
+    这比单纯 TCP/TLS 连接检测更贴近实际使用体验。
+    """
 
     def __init__(self, check_urls: list[str], timeout: float, max_concurrent: int):
-        self.check_urls = check_urls
+        self.check_urls = check_urls or DEFAULT_CHECK_URLS
         self.timeout = timeout
         self.semaphore = asyncio.Semaphore(max_concurrent)
 
@@ -58,7 +69,13 @@ class ProxyChecker:
         return max_latency
 
     async def _http_latency_check(self, proxy_url: str, target_url: str) -> float | None:
-        """通过代理发送 HTTP 请求检测延迟"""
+        """通过代理发送 HTTP(S) 请求检测延迟
+
+        使用 aiohttp 的 HTTP CONNECT 隧道支持 HTTPS 目标：
+        - 对于 HTTPS 目标：proxy_url 格式为 http://host:port，
+          aiohttp 自动通过 CONNECT 方法建立 TLS 隧道
+        - 对于 HTTP 目标：直接通过代理转发请求
+        """
         start = time.monotonic()
         try:
             timeout = aiohttp.ClientTimeout(total=self.timeout)
@@ -89,11 +106,14 @@ class ProxyChecker:
         links = [p.link for p in proxies]
         return await self.check_batch(links)
 
+    # ---- 协议链接转代理 URL ----
+
     def _link_to_proxy_url(self, link: str) -> str | None:
         """将分享链接转换为 aiohttp 可用的代理 URL 格式
 
-        aiohttp 代理格式: http://host:port 或 socks5://host:port
-        对于需要 TLS 的协议，代理 URL 统一使用 http://（代理协议≠传输协议）
+        aiohttp 代理格式: http://host:port
+        无论是 HTTP 还是 HTTPS 协议的代理，代理 URL 统一使用 http://
+        aiohttp 会自动通过 CONNECT 方法为 HTTPS 目标建立隧道
         """
         try:
             if link.startswith("vmess://"):
