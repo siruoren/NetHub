@@ -2,7 +2,7 @@ from __future__ import annotations
 """数据库操作层 - aiosqlite 异步封装"""
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import aiosqlite
 
@@ -199,6 +199,32 @@ class ProxyDatabase:
         """删除 fail_count >= max_fail 的代理，返回删除数量"""
         cursor = await self._db.execute(
             "DELETE FROM proxies WHERE fail_count >= ?", (max_fail,)
+        )
+        await self._db.commit()
+        return cursor.rowcount
+
+    async def delete_sub_proxies_by_fail_count(self, max_fail: int) -> int:
+        """删除订阅源中 fail_count >= max_fail 的代理（source 不以 instance: 开头），返回删除数量"""
+        cursor = await self._db.execute(
+            "DELETE FROM proxies WHERE fail_count >= ? AND source NOT LIKE 'instance:%'",
+            (max_fail,),
+        )
+        await self._db.commit()
+        return cursor.rowcount
+
+    async def delete_instance_proxies_stale(self, days: int) -> int:
+        """删除实例源中连续 days 天无成功的代理
+
+        条件：source 以 'instance:' 开头 且 fail_count > 0 且
+        (last_success_time 为空 或 last_success_time 距今超过 days 天)
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cursor = await self._db.execute(
+            """DELETE FROM proxies
+               WHERE source LIKE 'instance:%'
+                 AND fail_count > 0
+                 AND (last_success_time = '' OR last_success_time < ?)""",
+            (cutoff,),
         )
         await self._db.commit()
         return cursor.rowcount

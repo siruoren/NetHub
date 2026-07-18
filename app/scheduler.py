@@ -334,7 +334,12 @@ class TaskScheduler:
             self._add_instance_source_job(source)
 
     async def _fetch_single_instance_source(self, source_id: int) -> None:
-        """从服务实例获取已连接节点配置并检测入库"""
+        """从服务实例获取已连接节点配置，先全部入库再检测延迟
+
+        实例源的节点：先入库（延迟=-1），再逐个检测更新延迟。
+        检测不通过也保留在库中，仅累加 fail_count，由定时清理任务
+        在连续 7 天无成功后才移除。
+        """
         source = await self.db.get_instance_source_by_id(source_id)
         if not source or not source.enabled:
             return
@@ -356,56 +361,59 @@ class TaskScheduler:
                 await self.db.update_instance_fetch_status(source_id, "success")
                 return
 
-            logger.info("实例源 #%d: 获取到 %d 个节点，开始逐个检测...",
+            logger.info("实例源 #%d: 获取到 %d 个节点，先入库再检测...",
                         source.id, len(proxies))
 
+            # ---- 第一步：全部入库（延迟=-1 表示未检测） ----
+            added = 0
+            existed = 0
+            for proxy in proxies:
+                existing = await self.db.get_proxy_by_link(proxy.link)
+                if existing:
+                    existed += 1
+                else:
+                    # 入库时 latency_ms=-1（未检测），不影响后续检测
+                    success = await self.db.insert_proxy(proxy, -1, source_tag)
+                    if success:
+                        added += 1
+
+            logger.info("实例源 #%d: 入库完成, 新增 %d, 已存在 %d, 开始检测延迟...",
+                        source.id, added, existed)
+
+            # ---- 第二步：逐个检测延迟并更新 ----
             sub_checker = ProxyChecker(
                 check_urls=self.checker.check_urls,
                 timeout=self.config.check.timeout,
                 max_concurrent=source.max_concurrent,
             )
 
-            threshold = source.latency_threshold
-            added = 0
-            updated = 0
-            skipped = 0
-
+            checked_ok = 0
+            checked_fail = 0
             for proxy in proxies:
+                db_record = await self.db.get_proxy_by_link(proxy.link)
+                if not db_record:
+                    continue
+
                 try:
                     latency = await sub_checker.check_proxy(proxy.link)
                 except Exception as e:
-                    logger.debug("检测节点 %s 异常，跳过: %s", proxy.name[:30], e)
-                    skipped += 1
-                    continue
+                    logger.debug("检测节点 %s 异常: %s", proxy.name[:30], e)
+                    latency = None
 
-                if latency is None:
-                    skipped += 1
-                    existing = await self.db.get_proxy_by_link(proxy.link)
-                    if existing:
-                        await self.db.increment_fail(existing.id)
-                    continue
-
-                if latency <= threshold:
-                    existing = await self.db.get_proxy_by_link(proxy.link)
-                    if existing:
-                        await self.db.update_latency(existing.id, latency)
-                        updated += 1
-                    else:
-                        success = await self.db.insert_proxy(proxy, latency, source_tag)
-                        if success:
-                            added += 1
+                if latency is not None and latency > 0:
+                    await self.db.update_latency(db_record.id, latency)
+                    checked_ok += 1
                 else:
-                    existing = await self.db.get_proxy_by_link(proxy.link)
-                    if existing:
-                        await self.db.increment_fail(existing.id)
-                    skipped += 1
+                    # 检测不通过也保留，仅累加 fail_count
+                    await self.db.increment_fail(db_record.id)
+                    checked_fail += 1
 
             await self.db.update_instance_total_count(source_id, len(proxies))
             await self.db.update_instance_fetch_status(source_id, "success")
 
             self._last_fetch_time = datetime.now(timezone.utc).isoformat()
-            logger.info("实例源 #%d 获取完成: 新增 %d, 更新 %d, 跳过 %d, 总获取 %d",
-                        source.id, added, updated, skipped, len(proxies))
+            logger.info("实例源 #%d 获取完成: 入库 %d(新增%d), 检测成功 %d, 失败 %d, 总 %d",
+                        source.id, added + existed, added, checked_ok, checked_fail, len(proxies))
         except Exception as e:
             await self.db.update_instance_fetch_status(source_id, "failed")
             logger.error("获取实例源 #%d 异常: %s", source.id, e, exc_info=True)
@@ -420,11 +428,20 @@ class TaskScheduler:
             await self._fetch_single_instance_source(source.id)
 
     async def cleanup_proxies(self) -> None:
-        """清理不合格代理和空订阅源"""
-        # 清理连续3次验证失败的代理
-        deleted = await self.db.delete_proxies_by_fail_count(3)
+        """清理不合格代理和空订阅源
+
+        - 订阅源代理：连续 3 次验证失败则移除（原逻辑不变）
+        - 实例源代理：last_success_time 为空或距今超过 7 天且 fail_count > 0 才移除
+        """
+        # 清理订阅源代理：连续3次验证失败
+        deleted = await self.db.delete_sub_proxies_by_fail_count(3)
         if deleted > 0:
-            logger.info("清理代理: 删除 %d 个连续3次不可用的代理", deleted)
+            logger.info("清理订阅源代理: 删除 %d 个连续3次不可用的代理", deleted)
+
+        # 清理实例源代理：连续7天无成功
+        deleted_inst = await self.db.delete_instance_proxies_stale(7)
+        if deleted_inst > 0:
+            logger.info("清理实例源代理: 删除 %d 个连续7天无成功的代理", deleted_inst)
 
         # 清理连续30天代理数为0的订阅源
         empty_subs = await self.db.get_subscriptions_with_empty_days(30)
