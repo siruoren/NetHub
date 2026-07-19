@@ -37,10 +37,10 @@ RUN curl -fsSL --connect-timeout 30 --max-time 180 --retry 3 --retry-delay 5 \
 
 # 下载 geosite.dat / geoip.dat 数据文件
 RUN curl -fsSL --connect-timeout 30 --max-time 120 --retry 3 --retry-delay 5 \
-    "https://github.com/v2fly/domain-list-community/releases/download/20260717032527/dlc.dat" \
+    "https://ghp.keleyaa.com/https://github.com/v2fly/domain-list-community/releases/download/20260717032527/dlc.dat" \
     -o /usr/local/bin/geosite.dat \
     && curl -fsSL --connect-timeout 30 --max-time 120 --retry 3 --retry-delay 5 \
-    "https://github.com/v2fly/geoip/releases/download/202607171233/geoip.dat \
+    "https://gitproxy.mrhjx.cn/https://github.com/v2fly/geoip/releases/download/202607171233/geoip.dat \
     -o /usr/local/bin/geoip.dat
 
 
