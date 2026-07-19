@@ -377,9 +377,31 @@ class TaskScheduler:
             logger.info("开始获取实例源 #%d: %s", source.id, source.base_url)
             await self.db.update_instance_fetch_status(source_id, "updating")
 
-            proxies = await fetch_connected_proxies(
+            proxies, subscription_urls = await fetch_connected_proxies(
                 source.base_url, source.username, source.password,
             )
+
+            # 自动将服务实例中的订阅源新增到本地订阅源表
+            if subscription_urls:
+                new_sub_count = 0
+                for sub_url in subscription_urls:
+                    existing = await self.db.get_subscription_by_url(sub_url)
+                    if not existing:
+                        sub_record = await self.db.add_subscription(
+                            url=sub_url,
+                            crontab="0 * * * *",
+                            latency_threshold=source.latency_threshold,
+                            max_retries=3,
+                            max_concurrent=source.max_concurrent,
+                            enabled=True,
+                        )
+                        if sub_record:
+                            self._add_subscription_job(sub_record)
+                            asyncio.create_task(self._fetch_single_subscription(sub_record.id))
+                            new_sub_count += 1
+                            logger.info("自动新增订阅源: %s (来自实例源 #%d)", sub_url[:50], source.id)
+                if new_sub_count > 0:
+                    logger.info("实例源 #%d: 自动新增 %d 个订阅源", source.id, new_sub_count)
 
             if not proxies:
                 logger.warning("实例源 #%d 未获取到任何已连接节点", source.id)
