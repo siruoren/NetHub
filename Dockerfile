@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 # GitHub 下载镜像前缀（国内构建可设为 https://ghgo.xyz/ 等）
-ARG GH_MIRROR=""
+ARG GH_MIRROR="https://gh-proxy.com/"
 
 WORKDIR /app
 
@@ -11,6 +11,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     unzip \
     && rm -rf /var/lib/apt/lists/*
+
+
+# 安装 Python 依赖
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
 
 # 下载核心（固定版本 + 超时重试）
 # v2ray-core v5.23.0
@@ -37,9 +43,6 @@ RUN curl -fsSL --connect-timeout 30 --max-time 120 --retry 3 --retry-delay 5 \
     "${GH_MIRROR}https://github.com/v2fly/geoip/releases/download/202507170706/geoip.dat" \
     -o /usr/local/bin/geoip.dat
 
-# 安装 Python 依赖
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
 # 复制代码
 COPY . .
