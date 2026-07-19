@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 # GitHub 下载镜像前缀（国内构建可设为 https://ghgo.xyz/ 等）
-ARG GH_MIRROR="https://gh-proxy.com/"
+ARG GH_MIRROR="https://github.geekery.cn/"
 
 WORKDIR /app
 
@@ -21,7 +21,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 下载核心（固定版本 + 超时重试）
 # v2ray-core v5.23.0
 RUN curl -fsSL --connect-timeout 30 --max-time 180 --retry 3 --retry-delay 5 \
-    "${GH_MIRROR}https://github.com/v2fly/v2ray-core/releases/download/v5.23.0/v2ray-linux-64.zip" \
+    "${GH_MIRROR}https://github.com/v2fly/v2ray-core/releases/download/v5.51.2/v2ray-linux-64.zip" \
     -o /tmp/core.zip \
     && unzip -o /tmp/core.zip -d /usr/local/bin/ v2ray \
     && chmod +x /usr/local/bin/v2ray \
@@ -29,7 +29,7 @@ RUN curl -fsSL --connect-timeout 30 --max-time 180 --retry 3 --retry-delay 5 \
 
 # Xray-core v25.7.16
 RUN curl -fsSL --connect-timeout 30 --max-time 180 --retry 3 --retry-delay 5 \
-    "${GH_MIRROR}https://github.com/XTLS/Xray-core/releases/download/v25.7.16/Xray-linux-64.zip" \
+    "${GH_MIRROR}https://github.com/XTLS/Xray-core/releases/download/v26.7.11/Xray-macos-64.zip" \
     -o /tmp/xray.zip \
     && unzip -o /tmp/xray.zip -d /usr/local/bin/ xray \
     && chmod +x /usr/local/bin/xray \
