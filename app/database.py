@@ -221,6 +221,14 @@ class ProxyDatabase:
         row = await cursor.fetchone()
         return row["fail_count"] if row else 0
 
+    async def update_proxy_source(self, proxy_id: int, source: str) -> None:
+        """更新节点的 source 字段（用于去重：将实例源节点归属转移到订阅源）"""
+        await self._db.execute(
+            "UPDATE proxies SET source = ? WHERE id = ?",
+            (source, proxy_id),
+        )
+        await self._db.commit()
+
     async def delete_proxy(self, proxy_id: int) -> None:
         """删除指定节点"""
         await self._db.execute("DELETE FROM proxies WHERE id = ?", (proxy_id,))
@@ -282,18 +290,14 @@ class ProxyDatabase:
     async def get_subscription_output_proxies(self, max_latency: float) -> list[ProxyDBRecord]:
         """获取对外订阅输出节点列表
 
-        订阅源节点：仅输出延迟达标且未失败的
-        实例源节点（source 以 'instance:' 开头）：无论检测是否通过均输出
+        仅输出订阅源节点（延迟达标且未失败的），不包含实例源节点
         """
         cursor = await self._db.execute(
             """SELECT * FROM proxies
-               WHERE (
-                   /* 订阅源节点：延迟达标且未失败 */
-                   (source NOT LIKE 'instance:%' AND latency_ms > 0 AND latency_ms <= ? AND fail_count = 0)
-                   OR
-                   /* 实例源节点：全部输出 */
-                   (source LIKE 'instance:%')
-               )
+               WHERE source NOT LIKE 'instance:%'
+                 AND latency_ms > 0
+                 AND latency_ms <= ?
+                 AND fail_count = 0
                ORDER BY latency_ms ASC""",
             (max_latency,),
         )

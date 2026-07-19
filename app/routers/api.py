@@ -50,8 +50,7 @@ async def delete_proxy(proxy_id: int):
 async def v2ray_subscription():
     """获取核心格式订阅（base64 编码）
 
-    订阅源节点：仅输出延迟达标且未失败的
-    实例源节点：无论检测是否通过均输出
+    仅输出订阅源节点（延迟达标且未失败的），不包含实例源节点
     """
     db = get_db()
     config = get_config()
@@ -64,8 +63,7 @@ async def v2ray_subscription():
 async def clash_subscription():
     """获取 Clash 格式订阅（YAML）
 
-    订阅源节点：仅输出延迟达标且未失败的
-    实例源节点：无论检测是否通过均输出
+    仅输出订阅源节点（延迟达标且未失败的），不包含实例源节点
     """
     db = get_db()
     config = get_config()

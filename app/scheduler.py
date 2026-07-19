@@ -163,6 +163,9 @@ class TaskScheduler:
                     skipped += 1
                     existing = await self.db.get_proxy_by_link(proxy.link)
                     if existing:
+                        # 去重：若该节点原属于实例源，将 source 转移到订阅源
+                        if existing.source.startswith("instance:"):
+                            await self.db.update_proxy_source(existing.id, sub.url)
                         fail_ids.append(existing.id)
                     continue
 
@@ -170,6 +173,9 @@ class TaskScheduler:
                     # 延迟达标
                     existing = await self.db.get_proxy_by_link(proxy.link)
                     if existing:
+                        # 去重：若该节点原属于实例源，将 source 转移到订阅源
+                        if existing.source.startswith("instance:"):
+                            await self.db.update_proxy_source(existing.id, sub.url)
                         latency_updates.append((existing.id, latency))
                         updated += 1
                     else:
@@ -181,6 +187,9 @@ class TaskScheduler:
                     skipped += 1
                     existing = await self.db.get_proxy_by_link(proxy.link)
                     if existing:
+                        # 去重：若该节点原属于实例源，将 source 转移到订阅源
+                        if existing.source.startswith("instance:"):
+                            await self.db.update_proxy_source(existing.id, sub.url)
                         fail_ids.append(existing.id)
 
             # 批量写入数据库
