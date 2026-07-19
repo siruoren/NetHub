@@ -34,6 +34,9 @@ async def index(request: Request):
     )
     proxies, stats, subscriptions, grouped, check_urls, instance_sources = results
 
+    # 过滤包含 nethub 的订阅源（内部地址不在管理界面展示）
+    subscriptions = [s for s in subscriptions if "nethub" not in s.url.lower()]
+
     # 序列化
     instance_sources_json = json.dumps(
         [dict(asdict(s)) for s in instance_sources],

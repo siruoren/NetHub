@@ -262,6 +262,8 @@
                                             onclick="editInstanceSource({{ inst.id }})">编辑</button>
                                     <button class="btn btn-outline-success btn-sm py-0 px-1" style="font-size:0.7rem"
                                             onclick="fetchInstanceSource({{ inst.id }})">获取</button>
+                                    <button class="btn btn-outline-info btn-sm py-0 px-1" style="font-size:0.7rem"
+                                            onclick="importSubs({{ inst.id }})">导入订阅</button>
                                 </td>
                             </tr>
                             {% endfor %}
@@ -881,6 +883,15 @@ async function fetchInstanceSource(id) {
         const data = await resp.json();
         if (resp.ok) { alert(data.message); setTimeout(refreshPage, 30000); }
         else { alert('获取失败: ' + (data.detail || '')); }
+    } catch (e) { alert('请求失败: ' + e.message); }
+}
+
+async function importSubs(id) {
+    try {
+        const resp = await fetch('/api/instance-sources/' + id + '/import-subs', { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) { alert(data.message); setTimeout(refreshPage, 10000); }
+        else { alert('导入失败: ' + (data.detail || '')); }
     } catch (e) { alert('请求失败: ' + e.message); }
 }
 

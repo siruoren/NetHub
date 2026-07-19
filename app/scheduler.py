@@ -28,6 +28,7 @@ class TaskScheduler:
         self._last_verify_time = ""
         self._fetching = False
         self._verifying = False
+        self._last_instance_sub_urls: list[str] = []  # 最近一次实例源获取的订阅地址缓存
 
     def start(self) -> None:
         """注册默认定时任务并启动调度器"""
@@ -390,27 +391,8 @@ class TaskScheduler:
                 source.base_url, source.username, source.password,
             )
 
-            # 自动将服务实例中的订阅源新增到本地订阅源表
-            if subscription_urls:
-                new_sub_count = 0
-                for sub_url in subscription_urls:
-                    existing = await self.db.get_subscription_by_url(sub_url)
-                    if not existing:
-                        sub_record = await self.db.add_subscription(
-                            url=sub_url,
-                            crontab="0 * * * *",
-                            latency_threshold=source.latency_threshold,
-                            max_retries=3,
-                            max_concurrent=source.max_concurrent,
-                            enabled=True,
-                        )
-                        if sub_record:
-                            self._add_subscription_job(sub_record)
-                            asyncio.create_task(self._fetch_single_subscription(sub_record.id))
-                            new_sub_count += 1
-                            logger.info("自动新增订阅源: %s (来自实例源 #%d)", sub_url[:50], source.id)
-                if new_sub_count > 0:
-                    logger.info("实例源 #%d: 自动新增 %d 个订阅源", source.id, new_sub_count)
+            # 缓存订阅地址列表，供手工导入时使用
+            self._last_instance_sub_urls = subscription_urls
 
             if not proxies:
                 logger.warning("实例源 #%d 未获取到任何已连接节点", source.id)
@@ -488,6 +470,46 @@ class TaskScheduler:
             return
         for source in sources:
             await self._fetch_single_instance_source(source.id)
+
+    async def import_instance_subscriptions(self, source_id: int) -> int:
+        """手工导入服务实例中的订阅源到本地订阅源表
+
+        先重新获取实例源以拿到最新订阅地址列表，然后逐个新增。
+        返回新增数量。
+        """
+        source = await self.db.get_instance_source_by_id(source_id)
+        if not source or not source.enabled:
+            return 0
+
+        # 获取实例源的订阅地址列表
+        _, subscription_urls = await fetch_connected_proxies(
+            source.base_url, source.username, source.password,
+        )
+
+        if not subscription_urls:
+            logger.info("实例源 #%d 没有订阅源可导入", source_id)
+            return 0
+
+        new_sub_count = 0
+        for sub_url in subscription_urls:
+            existing = await self.db.get_subscription_by_url(sub_url)
+            if not existing:
+                sub_record = await self.db.add_subscription(
+                    url=sub_url,
+                    crontab="0 * * * *",
+                    latency_threshold=source.latency_threshold,
+                    max_retries=3,
+                    max_concurrent=source.max_concurrent,
+                    enabled=True,
+                )
+                if sub_record:
+                    self._add_subscription_job(sub_record)
+                    asyncio.create_task(self._fetch_single_subscription(sub_record.id))
+                    new_sub_count += 1
+                    logger.info("导入订阅源: %s (来自实例源 #%d)", sub_url[:50], source_id)
+
+        logger.info("实例源 #%d: 导入完成, 新增 %d 个订阅源", source_id, new_sub_count)
+        return new_sub_count
 
     async def cleanup_proxies(self) -> None:
         """清理不合格节点和空订阅源

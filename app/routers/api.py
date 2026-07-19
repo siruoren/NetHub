@@ -139,9 +139,10 @@ async def health_check():
 
 @router.get("/subscriptions")
 async def get_subscriptions():
-    """获取所有订阅源"""
+    """获取所有订阅源（过滤 nethub 内部地址）"""
     db = get_db()
     subs = await db.get_all_subscriptions()
+    subs = [s for s in subs if "nethub" not in s.url.lower()]
     return {
         "total": len(subs),
         "subscriptions": [_subscription_to_dict(s) for s in subs],
@@ -491,6 +492,19 @@ async def manual_fetch_instance_source(source_id: int):
     scheduler = get_scheduler()
     asyncio.create_task(scheduler._fetch_single_instance_source(source_id))
     return {"message": f"已触发实例源 #{source_id} 的获取任务"}
+
+
+@router.post("/instance-sources/{source_id}/import-subs")
+async def import_instance_subscriptions(source_id: int):
+    """手工导入服务实例中的订阅源到本地订阅源表"""
+    db = get_db()
+    source = await db.get_instance_source_by_id(source_id)
+    if not source:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="服务实例源不存在")
+    scheduler = get_scheduler()
+    count = await scheduler.import_instance_subscriptions(source_id)
+    return {"message": f"已导入 {count} 个订阅源", "imported": count}
 
 
 def _instance_source_to_dict(source) -> dict:
