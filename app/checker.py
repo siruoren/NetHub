@@ -1,17 +1,15 @@
 from __future__ import annotations
-"""节点连通性检测模块 - 参照服务实例项目的 HTTP 延迟检测逻辑重构
+"""节点连通性检测模块 - 通过启动本地内核实例转发流量检测延迟
 
 检测策略（优先级从高到低）：
-1. HTTP 延迟检测：通过本地转发端口（SOCKS5/HTTP）发送 HTTP 请求到目标 URL，
-   测量完整往返时间，最贴近真实上网体验
+1. 内核转发检测：为每条节点启动一个内核实例，通过本地 HTTP 转发端口
+   发送 HTTP 请求到检测目标 URL，测量完整往返时间（含协议握手+传输），
+   最贴近真实上网体验
 2. TCP/TLS 直连检测：直接 TCP 连接到节点服务器地址，测量连接建立耗时；
-   若协议使用 TLS，则额外完成 TLS 握手
+   若协议使用 TLS，则额外完成 TLS 握手（作为回退方案）
 3. DNS 预解析：非 IP 地址先做 DNS 解析，解析失败直接判定不可达
 
 参照逻辑：
-- 服务实例项目的 Ping() 使用 net.DialTimeout("tcp") 测量直连延迟
-- 服务实例项目的 connectivity 使用本地转发端口 TCP 拨号做连通性监控
-- 服务实例项目的 HTTP 延迟通过转发端口发送 HTTP HEAD/GET 请求测真实延迟
 - 连接被拒绝（refused）仍返回延迟值（端口可达）
 - 超时则返回 None 表示不可达
 """
@@ -19,12 +17,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import socket
 import ssl
+import tempfile
 import time
 import base64
+import shutil
 from dataclasses import dataclass
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, parse_qs
 
 import aiohttp
 
@@ -58,22 +59,23 @@ class ProxyChecker:
     """基于 asyncio 的并发节点连通性检测器
 
     检测模式：
-    - http: 通过本地转发端口发送 HTTP 请求（最真实，需要转发服务已启动）
-    - tcp: 直接 TCP/TLS 连接到节点服务器地址
-    - auto: 优先 HTTP，失败则回退 TCP
+    - http: 为每条节点启动本地内核实例，通过转发端口发送 HTTP 请求（最真实）
+    - tcp: 直接 TCP/TLS 连接到节点服务器地址（回退方案）
+    - auto: 优先内核转发，失败则回退 TCP
     """
 
     def __init__(self, check_urls: list[str], timeout: float, max_concurrent: int,
                  socks_port: int = 0, http_port: int = 0,
-                 check_mode: str = "auto"):
+                 check_mode: str = "auto", kernel_path: str = "xray"):
         """
         Args:
             check_urls: HTTP 检测目标 URL 列表
             timeout: 单次检测超时秒数
             max_concurrent: 最大并发数
-            socks_port: 本地 SOCKS5 转发端口（0=未启用）
-            http_port: 本地 HTTP 转发端口（0=未启用）
+            socks_port: 本地 SOCKS5 转发端口（ConnectivityMonitor 使用）
+            http_port: 本地 HTTP 转发端口（ConnectivityMonitor 使用）
             check_mode: 检测模式 "http" / "tcp" / "auto"
+            kernel_path: 内核可执行文件路径
         """
         self.check_urls = check_urls or DEFAULT_CHECK_URLS
         self.timeout = timeout
@@ -81,47 +83,129 @@ class ProxyChecker:
         self.socks_port = socks_port if socks_port > 0 else DEFAULT_SOCKS_PORT
         self.http_port = http_port if http_port > 0 else DEFAULT_HTTP_PORT
         self.check_mode = check_mode
+        self.kernel_path = self._resolve_kernel_path(kernel_path)
+
+    @staticmethod
+    def _resolve_kernel_path(kernel_path: str) -> str:
+        """解析内核路径，返回绝对路径或空字符串"""
+        resolved = shutil.which(kernel_path)
+        if resolved:
+            return resolved
+        if os.path.isfile(kernel_path) and os.access(kernel_path, os.X_OK):
+            return kernel_path
+        logger.warning("内核可执行文件未找到: %s，内核转发检测不可用", kernel_path)
+        return ""
 
     async def check_proxy(self, link: str) -> float | None:
         """检测单个节点的延迟
 
         根据 check_mode 选择检测方式：
-        - auto: 优先 HTTP，失败则回退 TCP/TLS
-        - http: 仅通过本地转发端口检测
+        - auto: 优先内核转发，失败则回退 TCP/TLS
+        - http: 仅通过内核转发检测
         - tcp: 仅直连 TCP/TLS 检测
         """
-        conn_info = self._parse_link(link)
-        if not conn_info:
-            return None
-
         async with self.semaphore:
-            if self.check_mode == "http":
-                return await self._check_http_latency()
-            elif self.check_mode == "tcp":
+            if self.check_mode == "tcp":
+                conn_info = self._parse_link(link)
+                if not conn_info:
+                    return None
                 return await self._check_tcp_tls(conn_info)
-            else:
-                # auto: 优先 HTTP，失败回退 TCP
-                latency = await self._check_http_latency()
+
+            # http / auto 模式：优先内核转发
+            if self.kernel_path:
+                latency = await self._check_via_kernel(link)
                 if latency is not None:
                     return latency
-                return await self._check_tcp_tls(conn_info)
 
-    async def _check_http_latency(self) -> float | None:
-        """通过本地转发端口发送 HTTP 请求检测延迟
+            # auto 回退或 http 模式内核不可用时回退 TCP
+            if self.check_mode == "auto" or not self.kernel_path:
+                conn_info = self._parse_link(link)
+                if conn_info:
+                    return await self._check_tcp_tls(conn_info)
 
-        参照服务实例项目的 HTTP 延迟检测逻辑：
-        通过本地 SOCKS5/HTTP 转发端口向检测目标 URL 发送 HTTP 请求，
-        测量完整往返时间（含 DNS + TCP + TLS + HTTP），
-        这与真实上网体验最接近。
+            return None
+
+    # ---- 内核转发检测 ----
+
+    async def _check_via_kernel(self, link: str) -> float | None:
+        """为单条节点启动内核实例，通过本地 HTTP 转发端口检测延迟
+
+        流程：
+        1. 将分享链接转换为内核 outbound 配置
+        2. 分配一个空闲端口作为 HTTP inbound
+        3. 生成完整内核配置并写入临时文件
+        4. 启动内核进程
+        5. 等待端口就绪
+        6. 通过本地 HTTP 转发端口发送 HTTP 请求
+        7. 测量延迟
+        8. 终止内核进程并清理临时文件
         """
+        outbound = self._link_to_xray_outbound(link)
+        if not outbound:
+            return None
+
+        port = self._find_free_port()
+        config = {
+            "log": {"loglevel": "warning"},
+            "inbounds": [{
+                "tag": "http-in",
+                "protocol": "http",
+                "port": port,
+                "listen": "127.0.0.1",
+            }],
+            "outbounds": [outbound],
+        }
+
+        config_path = ""
+        proc = None
+        try:
+            # 写入临时配置文件
+            fd, config_path = tempfile.mkstemp(suffix=".json", prefix="nethub_")
+            with os.fdopen(fd, "w") as f:
+                json.dump(config, f, ensure_ascii=False)
+
+            # 启动内核进程
+            proc = await asyncio.create_subprocess_exec(
+                self.kernel_path, "run", "-c", config_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            # 等待端口就绪
+            ready = await self._wait_for_port(port, timeout=5.0)
+            if not ready:
+                return None
+
+            # 通过本地 HTTP 转发端口发送请求
+            return await self._http_request_via_proxy(port)
+
+        except Exception:
+            return None
+        finally:
+            # 终止内核进程
+            if proc and proc.returncode is None:
+                try:
+                    proc.terminate()
+                    await asyncio.wait_for(proc.wait(), timeout=3.0)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+            # 清理临时文件
+            if config_path:
+                try:
+                    os.unlink(config_path)
+                except Exception:
+                    pass
+
+    async def _http_request_via_proxy(self, port: int) -> float | None:
+        """通过本地 HTTP 转发端口发送 HTTP 请求检测延迟"""
         check_url = self.check_urls[0] if self.check_urls else DEFAULT_CHECK_URLS[0]
         start = time.monotonic()
         try:
-            # 优先使用 SOCKS5 转发端口
-            connector = aiohttp.TCPConnector(
-                limit=1, force_close=True,
-            )
-            proxy_url = f"http://127.0.0.1:{self.http_port}"
+            connector = aiohttp.TCPConnector(limit=1, force_close=True)
+            proxy_url = f"http://127.0.0.1:{port}"
             async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.head(
                     check_url,
@@ -130,7 +214,6 @@ class ProxyChecker:
                     allow_redirects=True,
                     ssl=False,
                 ) as resp:
-                    # 204 / 200 / 301 等均视为连通
                     elapsed = (time.monotonic() - start) * 1000
                     if resp.status < 500:
                         return round(elapsed, 1)
@@ -138,17 +221,418 @@ class ProxyChecker:
         except Exception:
             return None
 
-    async def _check_tcp_tls(self, info: ProxyConnInfo) -> float | None:
-        """直接 TCP/TLS 连接到节点服务器检测延迟
+    @staticmethod
+    def _find_free_port() -> int:
+        """查找一个空闲 TCP 端口"""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            return s.getsockname()[1]
 
-        参照服务实例项目的 Ping() 逻辑：
-        1. DNS 预解析（非 IP 地址先解析）
-        2. TCP DialTimeout 测量连接建立耗时
-        3. TLS 协议额外完成 TLS 握手
-        4. 连接被拒绝（refused）仍返回延迟（端口可达）
-        5. 超时返回 None
-        """
-        # DNS 预解析
+    @staticmethod
+    async def _wait_for_port(port: int, timeout: float = 5.0) -> bool:
+        """等待端口可连接"""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                _, writer = await asyncio.wait_for(
+                    asyncio.open_connection("127.0.0.1", port),
+                    timeout=1.0,
+                )
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+                return True
+            except Exception:
+                await asyncio.sleep(0.1)
+        return False
+
+    # ---- 内核配置生成 ----
+
+    @staticmethod
+    def _link_to_xray_outbound(link: str) -> dict | None:
+        """将分享链接转换为内核 outbound 配置"""
+        try:
+            if link.startswith("vmess://"):
+                return ProxyChecker._vmess_to_xray(link)
+            elif link.startswith("vless://"):
+                return ProxyChecker._vless_to_xray(link)
+            elif link.startswith("trojan://"):
+                return ProxyChecker._trojan_to_xray(link)
+            elif link.startswith("ss://"):
+                return ProxyChecker._ss_to_xray(link)
+            elif link.startswith("hysteria2://") or link.startswith("hy2://"):
+                return ProxyChecker._hysteria2_to_xray(link)
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _vmess_to_xray(link: str) -> dict | None:
+        """vmess:// 分享链接转内核 outbound"""
+        try:
+            config_b64 = link[8:]
+            padding = 4 - len(config_b64) % 4
+            if padding != 4:
+                config_b64 += "=" * padding
+            config = json.loads(base64.b64decode(config_b64).decode("utf-8"))
+
+            address = config.get("add", "")
+            port = int(config.get("port", 0))
+            if not address or not port:
+                return None
+
+            outbound = {
+                "protocol": "vmess",
+                "settings": {
+                    "vnext": [{
+                        "address": address,
+                        "port": port,
+                        "users": [{
+                            "id": config.get("id", ""),
+                            "alterId": int(config.get("aid", 0)),
+                            "security": config.get("scy", "auto"),
+                        }]
+                    }]
+                }
+            }
+
+            network = config.get("net", "tcp")
+            tls = config.get("tls", "")
+            stream = {"network": network}
+
+            if tls == "tls":
+                stream["security"] = "tls"
+                tls_settings = {}
+                if config.get("sni"):
+                    tls_settings["serverName"] = config["sni"]
+                if config.get("alpn"):
+                    tls_settings["alpn"] = config["alpn"].split(",")
+                if config.get("fp"):
+                    tls_settings["fingerprint"] = config["fp"]
+                if tls_settings:
+                    stream["tlsSettings"] = tls_settings
+            elif tls == "reality":
+                stream["security"] = "reality"
+                reality_settings = {}
+                if config.get("sni"):
+                    reality_settings["serverName"] = config["sni"]
+                if config.get("pbk"):
+                    reality_settings["publicKey"] = config["pbk"]
+                if config.get("sid"):
+                    reality_settings["shortId"] = config["sid"]
+                if config.get("fp"):
+                    reality_settings["fingerprint"] = config["fp"]
+                if reality_settings:
+                    stream["realitySettings"] = reality_settings
+            else:
+                stream["security"] = "none"
+
+            if network == "ws":
+                ws_settings = {}
+                if config.get("path"):
+                    ws_settings["path"] = config["path"]
+                if config.get("host"):
+                    ws_settings["headers"] = {"Host": config["host"]}
+                stream["wsSettings"] = ws_settings
+            elif network == "grpc":
+                grpc_settings = {}
+                if config.get("path"):
+                    grpc_settings["serviceName"] = config["path"]
+                stream["grpcSettings"] = grpc_settings
+            elif network in ("h2", "http"):
+                h2_settings = {}
+                if config.get("path"):
+                    h2_settings["path"] = config["path"]
+                if config.get("host"):
+                    h2_settings["host"] = [config["host"]]
+                stream["httpSettings"] = h2_settings
+
+            outbound["streamSettings"] = stream
+            return outbound
+        except Exception:
+            return None
+
+    @staticmethod
+    def _vless_to_xray(link: str) -> dict | None:
+        """vless:// 分享链接转内核 outbound"""
+        try:
+            parsed = urlparse(link)
+            query = parse_qs(parsed.query)
+
+            uuid = unquote(parsed.username) if parsed.username else ""
+            address = parsed.hostname or ""
+            port = parsed.port or 0
+            if not address or not port:
+                return None
+
+            users = [{"id": uuid, "encryption": "none"}]
+            flow = query.get("flow", [None])[0]
+            if flow:
+                users[0]["flow"] = flow
+
+            outbound = {
+                "protocol": "vless",
+                "settings": {
+                    "vnext": [{
+                        "address": address,
+                        "port": port,
+                        "users": users,
+                    }]
+                }
+            }
+
+            network = query.get("type", ["tcp"])[0]
+            security = query.get("security", ["none"])[0]
+            stream = {"network": network}
+
+            if security == "tls":
+                stream["security"] = "tls"
+                tls_settings = {}
+                sni = query.get("sni", [None])[0]
+                if sni:
+                    tls_settings["serverName"] = sni
+                alpn = query.get("alpn", [None])[0]
+                if alpn:
+                    tls_settings["alpn"] = alpn.split(",")
+                fp = query.get("fp", [None])[0]
+                if fp:
+                    tls_settings["fingerprint"] = fp
+                if tls_settings:
+                    stream["tlsSettings"] = tls_settings
+            elif security == "reality":
+                stream["security"] = "reality"
+                reality_settings = {}
+                sni = query.get("sni", [None])[0]
+                if sni:
+                    reality_settings["serverName"] = sni
+                pbk = query.get("pbk", [None])[0]
+                if pbk:
+                    reality_settings["publicKey"] = pbk
+                sid = query.get("sid", [None])[0]
+                if sid:
+                    reality_settings["shortId"] = sid
+                fp = query.get("fp", [None])[0]
+                if fp:
+                    reality_settings["fingerprint"] = fp
+                if reality_settings:
+                    stream["realitySettings"] = reality_settings
+            else:
+                stream["security"] = "none"
+
+            if network == "ws":
+                ws_settings = {}
+                path = query.get("path", [None])[0]
+                if path:
+                    ws_settings["path"] = path
+                host = query.get("host", [None])[0]
+                if host:
+                    ws_settings["headers"] = {"Host": host}
+                stream["wsSettings"] = ws_settings
+            elif network == "grpc":
+                grpc_settings = {}
+                service_name = query.get("serviceName", [None])[0]
+                if service_name:
+                    grpc_settings["serviceName"] = service_name
+                stream["grpcSettings"] = grpc_settings
+            elif network in ("h2", "http"):
+                h2_settings = {}
+                path = query.get("path", [None])[0]
+                if path:
+                    h2_settings["path"] = path
+                host = query.get("host", [None])[0]
+                if host:
+                    h2_settings["host"] = [host]
+                stream["httpSettings"] = h2_settings
+
+            outbound["streamSettings"] = stream
+            return outbound
+        except Exception:
+            return None
+
+    @staticmethod
+    def _trojan_to_xray(link: str) -> dict | None:
+        """trojan:// 分享链接转内核 outbound"""
+        try:
+            parsed = urlparse(link)
+            query = parse_qs(parsed.query)
+
+            password = unquote(parsed.username) if parsed.username else ""
+            address = parsed.hostname or ""
+            port = parsed.port or 443
+            if not address or not port:
+                return None
+
+            outbound = {
+                "protocol": "trojan",
+                "settings": {
+                    "servers": [{
+                        "address": address,
+                        "port": port,
+                        "password": password,
+                    }]
+                }
+            }
+
+            network = query.get("type", ["tcp"])[0]
+            security = query.get("security", ["tls"])[0]
+            stream = {"network": network, "security": "tls"}
+
+            tls_settings = {}
+            sni = query.get("sni", [None])[0]
+            if sni:
+                tls_settings["serverName"] = sni
+            alpn = query.get("alpn", [None])[0]
+            if alpn:
+                tls_settings["alpn"] = alpn.split(",")
+            fp = query.get("fp", [None])[0]
+            if fp:
+                tls_settings["fingerprint"] = fp
+            if tls_settings:
+                stream["tlsSettings"] = tls_settings
+
+            if network == "ws":
+                ws_settings = {}
+                path = query.get("path", [None])[0]
+                if path:
+                    ws_settings["path"] = path
+                host = query.get("host", [None])[0]
+                if host:
+                    ws_settings["headers"] = {"Host": host}
+                stream["wsSettings"] = ws_settings
+            elif network == "grpc":
+                grpc_settings = {}
+                service_name = query.get("serviceName", [None])[0]
+                if service_name:
+                    grpc_settings["serviceName"] = service_name
+                stream["grpcSettings"] = grpc_settings
+
+            outbound["streamSettings"] = stream
+            return outbound
+        except Exception:
+            return None
+
+    @staticmethod
+    def _ss_to_xray(link: str) -> dict | None:
+        """ss:// 分享链接转内核 outbound"""
+        try:
+            line = link
+            if "#" in line:
+                line = line[:line.rindex("#")]
+
+            ss_content = line[5:]
+            cipher = ""
+            password = ""
+            address = ""
+            port = 0
+
+            if "@" in ss_content:
+                at_idx = ss_content.rindex("@")
+                addr_port = ss_content[at_idx + 1:]
+                user_info_b64 = ss_content[:at_idx]
+
+                try:
+                    padding = 4 - len(user_info_b64) % 4
+                    if padding != 4:
+                        user_info_b64 += "=" * padding
+                    decoded = base64.b64decode(user_info_b64).decode("utf-8")
+                    cipher, password = decoded.split(":", 1)
+                except Exception:
+                    pass
+
+                if addr_port.startswith("["):
+                    bracket_end = addr_port.index("]")
+                    address = addr_port[1:bracket_end]
+                    port = int(addr_port[bracket_end + 2:]) if bracket_end + 2 < len(addr_port) else 0
+                elif ":" in addr_port:
+                    address, port_str = addr_port.rsplit(":", 1)
+                    port = int(port_str)
+            else:
+                try:
+                    padding = 4 - len(ss_content) % 4
+                    if padding != 4:
+                        ss_content += "=" * padding
+                    decoded = base64.b64decode(ss_content).decode("utf-8")
+                    user_info, addr_port = decoded.rsplit("@", 1)
+                    cipher, password = user_info.split(":", 1)
+                    if addr_port.startswith("["):
+                        bracket_end = addr_port.index("]")
+                        address = addr_port[1:bracket_end]
+                        port = int(addr_port[bracket_end + 2:]) if bracket_end + 2 < len(addr_port) else 0
+                    elif ":" in addr_port:
+                        address, port_str = addr_port.rsplit(":", 1)
+                        port = int(port_str)
+                except Exception:
+                    pass
+
+            if not address or not port:
+                return None
+
+            return {
+                "protocol": "shadowsocks",
+                "settings": {
+                    "servers": [{
+                        "address": address,
+                        "port": port,
+                        "method": cipher,
+                        "password": password,
+                    }]
+                }
+            }
+        except Exception:
+            return None
+
+    @staticmethod
+    def _hysteria2_to_xray(link: str) -> dict | None:
+        """hysteria2:// 分享链接转内核 outbound"""
+        try:
+            prefix_len = len("hysteria2://") if link.startswith("hysteria2://") else len("hy2://")
+            rest = link[prefix_len:]
+
+            if "#" in rest:
+                rest = rest[:rest.rindex("#")]
+
+            if "?" in rest:
+                host_part, query_part = rest.split("?", 1)
+                parsed = urlparse("http://" + host_part)
+                query = parse_qs(query_part)
+            else:
+                parsed = urlparse("http://" + rest)
+                query = {}
+
+            password = unquote(parsed.username) if parsed.username else ""
+            address = parsed.hostname or ""
+            port = parsed.port or 443
+            if not address or not port:
+                return None
+
+            outbound = {
+                "protocol": "hysteria2",
+                "settings": {
+                    "servers": [{
+                        "address": address,
+                        "port": port,
+                        "password": password,
+                    }]
+                }
+            }
+
+            stream = {"network": "h2", "security": "tls"}
+            sni = query.get("sni", [None])[0]
+            if sni:
+                stream["tlsSettings"] = {"serverName": sni}
+
+            outbound["streamSettings"] = stream
+            return outbound
+        except Exception:
+            return None
+
+    # ---- TCP/TLS 直连检测（回退方案） ----
+
+    async def _check_tcp_tls(self, info: ProxyConnInfo) -> float | None:
+        """直接 TCP/TLS 连接到节点服务器检测延迟（回退方案）"""
         host = info.host
         if not self._is_ip(host):
             resolved = await self._resolve_host(host)
@@ -157,7 +641,6 @@ class ProxyChecker:
                 return None
             host = resolved
 
-        # TCP/TLS 连接
         start = time.monotonic()
         try:
             if info.use_tls:
@@ -184,7 +667,6 @@ class ProxyChecker:
                 pass
             return round(elapsed, 1)
         except ConnectionRefusedError:
-            # 参照服务实例逻辑：连接被拒绝仍返回延迟（端口可达但拒绝连接）
             elapsed = (time.monotonic() - start) * 1000
             return round(elapsed, 1)
         except Exception:
@@ -207,10 +689,7 @@ class ProxyChecker:
 
     @staticmethod
     async def _resolve_host(host: str) -> str | None:
-        """异步 DNS 解析，返回第一个 IPv4/IPv6 地址
-
-        参照服务实例项目的 resolv.LookupHost() 逻辑
-        """
+        """异步 DNS 解析，返回第一个 IPv4/IPv6 地址"""
         try:
             loop = asyncio.get_running_loop()
             addrs = await loop.getaddrinfo(host, None)
@@ -240,7 +719,7 @@ class ProxyChecker:
         links = [p.link for p in proxies]
         return await self.check_batch(links)
 
-    # ---- 协议解析 ----
+    # ---- 协议解析（TCP/TLS 回退方案使用） ----
 
     def _parse_link(self, link: str) -> ProxyConnInfo | None:
         """解析分享链接，提取连接信息（地址、端口、是否 TLS）"""
@@ -265,8 +744,7 @@ class ProxyChecker:
             padding = 4 - len(config_b64) % 4
             if padding != 4:
                 config_b64 += "=" * padding
-            config_json = base64.b64decode(config_b64).decode("utf-8")
-            config = json.loads(config_json)
+            config = json.loads(base64.b64decode(config_b64).decode("utf-8"))
             address = config.get("add", "")
             port = config.get("port", 0)
             if not address or not port:
@@ -371,26 +849,13 @@ class ProxyChecker:
 
 
 class ConnectivityMonitor:
-    """连通性监控器 - 参照服务实例项目的 connectivity 逻辑
-
-    定期通过 TCP 拨号检测本地转发端口是否可达，
-    用于判断转发服务是否正常运行。
-    连续失败使用指数退避重试。
-    """
+    """连通性监控器 - 定期检测本地转发端口是否可达"""
 
     def __init__(self, socks_port: int = DEFAULT_SOCKS_PORT,
                  check_interval: float = 15.0,
                  timeout: float = 5.0,
                  backoff_base: float = 30.0,
                  backoff_max: float = 120.0):
-        """
-        Args:
-            socks_port: 本地转发端口
-            check_interval: 正常检测间隔（秒）
-            timeout: 单次检测超时（秒）
-            backoff_base: 失败退避基础延迟（秒）
-            backoff_max: 失败退避最大延迟（秒）
-        """
         self.socks_port = socks_port if socks_port > 0 else DEFAULT_SOCKS_PORT
         self.check_interval = check_interval
         self.timeout = timeout
@@ -398,11 +863,7 @@ class ConnectivityMonitor:
         self.backoff_max = backoff_max
 
     async def probe(self) -> bool:
-        """检测本地转发端口是否可达
-
-        参照服务实例项目的 probePhysicalConnectivity() 逻辑：
-        TCP 拨号到本地转发端口，成功则可达。
-        """
+        """检测本地转发端口是否可达"""
         try:
             _, writer = await asyncio.wait_for(
                 asyncio.open_connection("127.0.0.1", self.socks_port),
@@ -418,13 +879,7 @@ class ConnectivityMonitor:
             return False
 
     def backoff_delay(self, consecutive_failures: int) -> float:
-        """计算失败后的退避等待时间
-
-        参照服务实例项目的 connectivityBackoffDelay() 逻辑：
-        - 初始延迟 = backoff_base
-        - 每次失败延迟翻倍
-        - 最大不超过 backoff_max
-        """
+        """计算失败后的退避等待时间"""
         delay = self.backoff_base
         for _ in range(1, consecutive_failures):
             delay *= 2

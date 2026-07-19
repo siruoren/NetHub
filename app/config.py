@@ -24,8 +24,9 @@ class CheckConfig:
     max_concurrent: int = 50
     latency_threshold: float = 1500.0
     check_mode: str = "auto"  # 检测模式: "auto" / "http" / "tcp"
-    socks_port: int = 1080  # 本地转发端口（HTTP 延迟检测用）
+    socks_port: int = 1080  # 本地转发端口（ConnectivityMonitor 使用）
     http_port: int = 1081  # 本地 HTTP 转发端口
+    kernel_path: str = "xray"  # 内核可执行文件路径
 
 
 @dataclass
@@ -81,6 +82,7 @@ def load_config(path: str = "config.yaml") -> AppConfig:
             "check_mode": "auto",
             "socks_port": 1080,
             "http_port": 1081,
+            "kernel_path": "xray",
         },
         "scheduler": {
             "fetch_interval": 3600,

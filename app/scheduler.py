@@ -144,6 +144,7 @@ class TaskScheduler:
                 socks_port=self.checker.socks_port,
                 http_port=self.checker.http_port,
                 check_mode=self.checker.check_mode,
+                kernel_path=self.checker.kernel_path,
             )
             links = [p.link for p in proxies]
             results = await sub_checker.check_batch(links)
@@ -306,6 +307,7 @@ class TaskScheduler:
             socks_port=self.checker.socks_port,
             http_port=self.checker.http_port,
             check_mode=self.checker.check_mode,
+            kernel_path=self.checker.kernel_path,
         )
         links = [p.link for p in proxies]
         results = await sub_checker.check_batch(links)
@@ -426,6 +428,7 @@ class TaskScheduler:
                 socks_port=self.checker.socks_port,
                 http_port=self.checker.http_port,
                 check_mode=self.checker.check_mode,
+                kernel_path=self.checker.kernel_path,
             )
             links = [p.link for p in proxies]
             results = await sub_checker.check_batch(links)

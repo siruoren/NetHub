@@ -2,10 +2,23 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# 安装系统依赖
+# 安装系统依赖 + 下载核心
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
-    && rm -rf /var/lib/apt/lists/*
+    curl \
+    unzip \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -sL "https://github.com/v2fly/v2ray-core/releases/latest/download/v2ray-linux-64.zip" -o /tmp/core.zip \
+    && unzip -o /tmp/core.zip -d /usr/local/bin/ v2ray \
+    && chmod +x /usr/local/bin/v2ray \
+    && curl -sL "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip" -o /tmp/xray.zip \
+    && unzip -o /tmp/xray.zip -d /usr/local/bin/ xray \
+    && chmod +x /usr/local/bin/xray \
+    && rm -f /tmp/core.zip /tmp/xray.zip
+
+# 下载 geosite.dat / geoip.dat 数据文件
+RUN curl -sL "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat" -o /usr/local/bin/geosite.dat \
+    && curl -sL "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat" -o /usr/local/bin/geoip.dat
 
 # 安装 Python 依赖
 COPY requirements.txt .

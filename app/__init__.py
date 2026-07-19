@@ -119,6 +119,7 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
             socks_port=_config.check.socks_port,
             http_port=_config.check.http_port,
             check_mode=_config.check.check_mode,
+            kernel_path=_config.check.kernel_path,
         )
 
         # 初始化调度器
