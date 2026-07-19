@@ -1,9 +1,9 @@
 version: "3.8"
 
 services:
-  proxy-pool:
+  nethub:
     build: .
-    container_name: proxy-pool
+    container_name: nethub
     ports:
       - "2020:8080"
     volumes:

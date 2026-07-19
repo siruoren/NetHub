@@ -278,7 +278,7 @@
 
 <!-- 操作按钮 -->
 <div class="d-flex justify-content-between align-items-center mb-3">
-    <h5 class="mb-0">可用代理</h5>
+    <h5 class="mb-0">可用节点</h5>
     <div>
         <small class="text-muted me-2">
             {% if last_fetch_time %}上次拉取: {{ last_fetch_time[:19] }}{% endif %}
@@ -297,7 +297,7 @@
     </div>
 </div>
 
-<!-- 按来源 Tab 切换（订阅源 + 服务实例源，只显示有可用代理的） -->
+<!-- 按来源 Tab 切换（订阅源 + 服务实例源，只显示有可用节点的） -->
 {% set available_subs = [] %}
 {% for sub in subscriptions %}
 {% if sub_available_counts.get(sub.url, 0) > 0 %}
@@ -342,7 +342,7 @@
                 <i class="bi bi-cloud-download"></i> 拉取此订阅
             </button>
             <button class="btn btn-outline-primary btn-sm" onclick="triggerVerifySub({{ sub.id }})">
-                <i class="bi bi-arrow-repeat"></i> 验证此订阅代理
+                <i class="bi bi-arrow-repeat"></i> 验证此订阅节点
             </button>
         </div>
         <div class="table-responsive">
@@ -380,7 +380,7 @@
                     </tr>
                     {% endfor %}
                     {% if not grouped.get(sub.url) %}
-                    <tr><td colspan="8" class="text-center text-muted py-3">暂无可用代理，请先拉取此订阅</td></tr>
+                    <tr><td colspan="8" class="text-center text-muted py-3">暂无可用节点，请先拉取此订阅</td></tr>
                     {% endif %}
                 </tbody>
             </table>
@@ -441,7 +441,7 @@
 {% else %}
 <div class="card">
     <div class="card-body text-center text-muted py-4">
-        暂无可用代理
+        暂无可用节点
     </div>
 </div>
 {% endif %}
@@ -673,7 +673,7 @@ async function deleteSubscription(id) {
     } catch (e) { alert('删除失败: ' + e.message); }
 }
 
-// ---- 代理操作 ----
+// ---- 节点操作 ----
 // 获取当前激活 Tab 对应的订阅 ID
 function getCurrentSubId() {
     var activeTab = document.querySelector('#subTab .nav-link.active');
@@ -729,7 +729,7 @@ async function triggerVerifySub(subId) {
 }
 
 async function deleteProxy(id) {
-    if (!confirm('确定删除该代理？')) return;
+    if (!confirm('确定删除该节点？')) return;
     try {
         await fetch('/api/proxies/' + id, { method: 'DELETE' });
         location.reload();

@@ -116,6 +116,9 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
             check_urls=check_urls,
             timeout=_config.check.timeout,
             max_concurrent=_config.check.max_concurrent,
+            socks_port=_config.check.socks_port,
+            http_port=_config.check.http_port,
+            check_mode=_config.check.check_mode,
         )
 
         # 初始化调度器

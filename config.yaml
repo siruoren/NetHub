@@ -10,6 +10,9 @@ check:
   timeout: 5.0
   max_concurrent: 50
   latency_threshold: 1500.0
+  check_mode: "auto"  # 检测模式: "auto"(优先HTTP回退TCP) / "http"(仅HTTP) / "tcp"(仅TCP/TLS)
+  socks_port: 1080    # 本地转发端口（HTTP延迟检测用）
+  http_port: 1081     # 本地HTTP转发端口
 
 scheduler:
   fetch_interval: 3600

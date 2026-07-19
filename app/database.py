@@ -10,7 +10,7 @@ from app.models import ProxyDBRecord, ProxyInfo, SubscriptionRecord, InstanceSou
 
 
 class ProxyDatabase:
-    """代理数据库异步操作层"""
+    """节点数据库异步操作层"""
 
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -145,7 +145,7 @@ class ProxyDatabase:
         )
 
     async def insert_proxy(self, proxy: ProxyInfo, latency_ms: float, source: str) -> bool:
-        """插入新代理，link 唯一约束，重复则忽略。返回是否插入成功"""
+        """插入新节点，link 唯一约束，重复则忽略。返回是否插入成功"""
         now = datetime.now(timezone.utc).isoformat()
         try:
             cursor = await self._db.execute(
@@ -222,12 +222,12 @@ class ProxyDatabase:
         return row["fail_count"] if row else 0
 
     async def delete_proxy(self, proxy_id: int) -> None:
-        """删除指定代理"""
+        """删除指定节点"""
         await self._db.execute("DELETE FROM proxies WHERE id = ?", (proxy_id,))
         await self._db.commit()
 
     async def delete_proxies_by_fail_count(self, max_fail: int) -> int:
-        """删除 fail_count >= max_fail 的代理，返回删除数量"""
+        """删除 fail_count >= max_fail 的节点，返回删除数量"""
         cursor = await self._db.execute(
             "DELETE FROM proxies WHERE fail_count >= ?", (max_fail,)
         )
@@ -235,7 +235,7 @@ class ProxyDatabase:
         return cursor.rowcount
 
     async def delete_sub_proxies_by_fail_count(self, max_fail: int) -> int:
-        """删除订阅源中 fail_count >= max_fail 的代理（source 不以 instance: 开头），返回删除数量"""
+        """删除订阅源中 fail_count >= max_fail 的节点（source 不以 instance: 开头），返回删除数量"""
         cursor = await self._db.execute(
             "DELETE FROM proxies WHERE fail_count >= ? AND source NOT LIKE 'instance:%'",
             (max_fail,),
@@ -244,7 +244,7 @@ class ProxyDatabase:
         return cursor.rowcount
 
     async def delete_instance_proxies_stale(self, days: int) -> int:
-        """删除实例源中连续 days 天无成功的代理
+        """删除实例源中连续 days 天无成功的节点
 
         条件：source 以 'instance:' 开头 且 fail_count > 0 且
         (last_success_time 为空 或 last_success_time 距今超过 days 天)
@@ -261,7 +261,7 @@ class ProxyDatabase:
         return cursor.rowcount
 
     async def get_all_proxies(self) -> list[ProxyDBRecord]:
-        """获取所有代理"""
+        """获取所有节点"""
         cursor = await self._db.execute(
             "SELECT * FROM proxies ORDER BY latency_ms ASC"
         )
@@ -269,7 +269,7 @@ class ProxyDatabase:
         return [self._row_to_record(row) for row in rows]
 
     async def get_available_proxies(self, max_latency: float) -> list[ProxyDBRecord]:
-        """获取延迟低于阈值且未失败的可用代理"""
+        """获取延迟低于阈值且未失败的可用节点"""
         cursor = await self._db.execute(
             """SELECT * FROM proxies
                WHERE latency_ms > 0 AND latency_ms <= ? AND fail_count = 0
@@ -280,18 +280,18 @@ class ProxyDatabase:
         return [self._row_to_record(row) for row in rows]
 
     async def get_subscription_output_proxies(self, max_latency: float) -> list[ProxyDBRecord]:
-        """获取对外订阅输出代理列表
+        """获取对外订阅输出节点列表
 
-        订阅源代理：仅输出延迟达标且未失败的
-        实例源代理（source 以 'instance:' 开头）：无论检测是否通过均输出
+        订阅源节点：仅输出延迟达标且未失败的
+        实例源节点（source 以 'instance:' 开头）：无论检测是否通过均输出
         """
         cursor = await self._db.execute(
             """SELECT * FROM proxies
                WHERE (
-                   /* 订阅源代理：延迟达标且未失败 */
+                   /* 订阅源节点：延迟达标且未失败 */
                    (source NOT LIKE 'instance:%' AND latency_ms > 0 AND latency_ms <= ? AND fail_count = 0)
                    OR
-                   /* 实例源代理：全部输出 */
+                   /* 实例源节点：全部输出 */
                    (source LIKE 'instance:%')
                )
                ORDER BY latency_ms ASC""",
@@ -301,7 +301,7 @@ class ProxyDatabase:
         return [self._row_to_record(row) for row in rows]
 
     async def get_proxy_by_link(self, link: str) -> ProxyDBRecord | None:
-        """根据 link 查询代理"""
+        """根据 link 查询节点"""
         cursor = await self._db.execute(
             "SELECT * FROM proxies WHERE link = ?", (link,)
         )
@@ -309,7 +309,7 @@ class ProxyDatabase:
         return self._row_to_record(row) if row else None
 
     async def get_proxies_needing_verify(self, limit: int = 0) -> list[ProxyDBRecord]:
-        """获取需要验证的代理（按 last_check_time 排序，最旧的优先）"""
+        """获取需要验证的节点（按 last_check_time 排序，最旧的优先）"""
         query = "SELECT * FROM proxies ORDER BY last_check_time ASC"
         if limit > 0:
             query += f" LIMIT {limit}"
@@ -413,7 +413,7 @@ class ProxyDatabase:
         return cursor.rowcount > 0
 
     async def increment_empty_days(self, sub_id: int) -> None:
-        """订阅源连续空代理天数 +1"""
+        """订阅源连续空节点天数 +1"""
         await self._db.execute(
             "UPDATE subscriptions SET empty_days = empty_days + 1 WHERE id = ?",
             (sub_id,),
@@ -421,7 +421,7 @@ class ProxyDatabase:
         await self._db.commit()
 
     async def reset_empty_days(self, sub_id: int) -> None:
-        """订阅源有代理时重置空天数为0"""
+        """订阅源有节点时重置空天数为0"""
         await self._db.execute(
             "UPDATE subscriptions SET empty_days = 0 WHERE id = ?",
             (sub_id,),
@@ -429,7 +429,7 @@ class ProxyDatabase:
         await self._db.commit()
 
     async def get_subscriptions_with_empty_days(self, min_days: int) -> list[SubscriptionRecord]:
-        """获取连续空代理天数 >= min_days 的订阅源"""
+        """获取连续空节点天数 >= min_days 的订阅源"""
         cursor = await self._db.execute(
             "SELECT * FROM subscriptions WHERE empty_days >= ?", (min_days,)
         )
@@ -437,7 +437,7 @@ class ProxyDatabase:
         return [self._row_to_subscription(row) for row in rows]
 
     async def get_proxy_count_by_source(self, source: str) -> int:
-        """获取指定来源的代理总数"""
+        """获取指定来源的节点总数"""
         cursor = await self._db.execute(
             "SELECT COUNT(*) as cnt FROM proxies WHERE source = ?", (source,)
         )
@@ -445,7 +445,7 @@ class ProxyDatabase:
         return row["cnt"] if row else 0
 
     async def update_total_count(self, sub_id: int, count: int) -> None:
-        """更新订阅源最新一次拉取的代理总数"""
+        """更新订阅源最新一次拉取的节点总数"""
         await self._db.execute(
             "UPDATE subscriptions SET total_count = ? WHERE id = ?",
             (count, sub_id),
@@ -461,7 +461,7 @@ class ProxyDatabase:
         await self._db.commit()
 
     async def get_proxies_by_source(self, source: str) -> list[ProxyDBRecord]:
-        """根据来源订阅 URL 获取代理，按入库时间正序"""
+        """根据来源订阅 URL 获取节点，按入库时间正序"""
         cursor = await self._db.execute(
             """SELECT * FROM proxies WHERE source = ?
                ORDER BY created_at ASC""",
@@ -471,7 +471,7 @@ class ProxyDatabase:
         return [self._row_to_record(row) for row in rows]
 
     async def get_available_proxies_by_source(self, source: str, max_latency: float) -> list[ProxyDBRecord]:
-        """根据来源订阅 URL 获取可用代理，按入库时间正序"""
+        """根据来源订阅 URL 获取可用节点，按入库时间正序"""
         cursor = await self._db.execute(
             """SELECT * FROM proxies
                WHERE source = ? AND latency_ms > 0 AND latency_ms <= ? AND fail_count = 0
@@ -482,7 +482,7 @@ class ProxyDatabase:
         return [self._row_to_record(row) for row in rows]
 
     async def get_proxies_grouped_by_source(self, max_latency: float) -> dict[str, list[ProxyDBRecord]]:
-        """获取按订阅来源分组的可用代理，按入库时间正序"""
+        """获取按订阅来源分组的可用节点，按入库时间正序"""
         cursor = await self._db.execute(
             """SELECT * FROM proxies
                WHERE latency_ms > 0 AND latency_ms <= ? AND fail_count = 0

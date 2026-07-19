@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 @dataclass
 class ProxyInfo:
-    """从订阅解析出的代理信息"""
+    """从订阅解析出的节点信息"""
 
     protocol: str  # vmess / vless / trojan / ss / hysteria2
     name: str  # 节点名称
@@ -33,7 +33,7 @@ class ProxyDBRecord:
 
     @property
     def status(self) -> str:
-        """代理状态：available / unavailable / unchecked"""
+        """节点状态：available / unavailable / unchecked"""
         if self.latency_ms < 0:
             return "unchecked"
         if self.fail_count > 0:
@@ -52,8 +52,8 @@ class SubscriptionRecord:
     max_concurrent: int  # 异步最大并发数
     enabled: bool  # 是否启用
     created_at: str  # ISO8601
-    empty_days: int  # 连续代理数为0的天数
-    total_count: int  # 最新一次拉取的代理地址总数
+    empty_days: int  # 连续节点数为0的天数
+    total_count: int  # 最新一次拉取的节点地址总数
     fetch_status: str  # 拉取状态: idle / updating / success / failed
 
 

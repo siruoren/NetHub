@@ -1,4 +1,4 @@
-"""REST API 路由 - JSON 格式的代理数据接口"""
+"""REST API 路由 - JSON 格式的节点数据接口"""
 
 import asyncio
 import logging
@@ -17,7 +17,7 @@ router = APIRouter(prefix="/api")
 
 @router.get("/proxies")
 async def get_available_proxies():
-    """获取所有可用代理列表（latency_ms > 0 且 fail_count=0）"""
+    """获取所有可用节点列表（latency_ms > 0 且 fail_count=0）"""
     db = get_db()
     config = get_config()
     proxies = await db.get_available_proxies(config.check.latency_threshold)
@@ -29,7 +29,7 @@ async def get_available_proxies():
 
 @router.get("/proxies/all")
 async def get_all_proxies():
-    """获取所有代理（含不可用）"""
+    """获取所有节点（含不可用）"""
     db = get_db()
     proxies = await db.get_all_proxies()
     return {
@@ -40,7 +40,7 @@ async def get_all_proxies():
 
 @router.delete("/proxies/{proxy_id}")
 async def delete_proxy(proxy_id: int):
-    """删除指定代理"""
+    """删除指定节点"""
     db = get_db()
     await db.delete_proxy(proxy_id)
     return {"message": "deleted"}
@@ -48,10 +48,10 @@ async def delete_proxy(proxy_id: int):
 
 @router.get("/subscription/v2ray")
 async def v2ray_subscription():
-    """获取 v2ray 格式订阅（base64 编码）
+    """获取核心格式订阅（base64 编码）
 
-    订阅源代理：仅输出延迟达标且未失败的
-    实例源代理：无论检测是否通过均输出
+    订阅源节点：仅输出延迟达标且未失败的
+    实例源节点：无论检测是否通过均输出
     """
     db = get_db()
     config = get_config()
@@ -64,8 +64,8 @@ async def v2ray_subscription():
 async def clash_subscription():
     """获取 Clash 格式订阅（YAML）
 
-    订阅源代理：仅输出延迟达标且未失败的
-    实例源代理：无论检测是否通过均输出
+    订阅源节点：仅输出延迟达标且未失败的
+    实例源节点：无论检测是否通过均输出
     """
     db = get_db()
     config = get_config()
@@ -99,7 +99,7 @@ async def manual_fetch_subscription(sub_id: int):
 
 @router.post("/verify")
 async def manual_verify():
-    """手动触发验证代理"""
+    """手动触发验证节点"""
     scheduler = get_scheduler()
     if scheduler._verifying:
         return {"message": "验证任务正在进行中"}
@@ -109,7 +109,7 @@ async def manual_verify():
 
 @router.post("/verify/{sub_id}")
 async def manual_verify_subscription(sub_id: int):
-    """手动触发验证指定订阅源的代理"""
+    """手动触发验证指定订阅源的节点"""
     db = get_db()
     sub = await db.get_subscription_by_id(sub_id)
     if not sub:
@@ -117,7 +117,7 @@ async def manual_verify_subscription(sub_id: int):
         raise HTTPException(status_code=404, detail="订阅不存在")
     scheduler = get_scheduler()
     asyncio.create_task(scheduler.verify_subscription_proxies(sub_id))
-    return {"message": f"已触发订阅 #{sub_id} 的代理验证"}
+    return {"message": f"已触发订阅 #{sub_id} 的节点验证"}
 
 
 @router.get("/stats")
@@ -216,7 +216,7 @@ async def auto_add_subscription(req: AutoSubRequest):
     asyncio.create_task(fetch_and_verify())
     return {
         "status": "added",
-        "message": "订阅已添加，正在拉取并验证代理",
+        "message": "订阅已添加，正在拉取并验证节点",
         "subscription": _subscription_to_dict(sub),
     }
 
@@ -278,7 +278,7 @@ async def delete_subscription(sub_id: int):
 
 @router.get("/proxies/grouped")
 async def get_proxies_grouped():
-    """获取按订阅来源分组的可用代理"""
+    """获取按订阅来源分组的可用节点"""
     db = get_db()
     config = get_config()
     grouped = await db.get_proxies_grouped_by_source(config.check.latency_threshold)

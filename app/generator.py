@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 def generate_v2ray_subscription(proxies: list[ProxyDBRecord]) -> str:
     """生成 v2ray 格式订阅内容
 
-    将所有代理的原始 link 换行拼接后 base64 编码
+    将所有节点的原始 link 换行拼接后 base64 编码
     """
     links = [p.link for p in proxies]
     content = "\n".join(links)

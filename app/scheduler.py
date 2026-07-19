@@ -39,14 +39,14 @@ class TaskScheduler:
             "interval",
             seconds=cfg.verify_interval,
             id="verify_proxies",
-            name="验证已存代理",
+            name="验证已存节点",
         )
         self.scheduler.add_job(
             self.cleanup_proxies,
             "interval",
             seconds=cfg.cleanup_interval,
             id="cleanup_proxies",
-            name="清理不合格代理",
+            name="清理不合格节点",
         )
         self.scheduler.start()
         logger.info("调度器已启动: verify=%ds, cleanup=%ds",
@@ -135,11 +135,14 @@ class TaskScheduler:
 
             logger.info("订阅 #%d: 解析到 %d 个节点，并发检测中...", sub.id, len(proxies))
 
-            # 并发检测所有代理延迟
+            # 并发检测所有节点延迟
             sub_checker = ProxyChecker(
                 check_urls=self.checker.check_urls,
                 timeout=self.config.check.timeout,
                 max_concurrent=sub.max_concurrent,
+                socks_port=self.checker.socks_port,
+                http_port=self.checker.http_port,
+                check_mode=self.checker.check_mode,
             )
             links = [p.link for p in proxies]
             results = await sub_checker.check_batch(links)
@@ -186,11 +189,11 @@ class TaskScheduler:
             if fail_ids:
                 await self.db.batch_increment_fail(fail_ids)
 
-            # 有代理入库则重置空天数
+            # 有节点入库则重置空天数
             if added > 0:
                 await self.db.reset_empty_days(sub_id)
 
-            # 更新订阅源的代理总数
+            # 更新订阅源的节点总数
             await self.db.update_total_count(sub_id, len(proxies))
             await self.db.update_fetch_status(sub_id, "success")
 
@@ -233,7 +236,7 @@ class TaskScheduler:
             self._fetching = False
 
     async def verify_stored_proxies(self) -> None:
-        """验证已存代理可用性（并发检测 + 批量数据库写入）"""
+        """验证已存节点可用性（并发检测 + 批量数据库写入）"""
         if self._verifying:
             logger.info("上一次验证任务尚未完成，跳过本次")
             return
@@ -242,10 +245,10 @@ class TaskScheduler:
         try:
             proxies = await self.db.get_all_proxies()
             if not proxies:
-                logger.info("数据库中没有代理，跳过验证")
+                logger.info("数据库中没有节点，跳过验证")
                 return
 
-            logger.info("开始验证 %d 个代理...", len(proxies))
+            logger.info("开始验证 %d 个节点...", len(proxies))
             links = [p.link for p in proxies]
             results = await self.checker.check_batch(links)
 
@@ -273,7 +276,7 @@ class TaskScheduler:
             self._verifying = False
 
     async def verify_subscription_proxies(self, sub_id: int) -> None:
-        """验证指定订阅源的代理可用性（并发检测 + 批量数据库写入）"""
+        """验证指定订阅源的节点可用性（并发检测 + 批量数据库写入）"""
         sub = await self.db.get_subscription_by_id(sub_id)
         if not sub:
             logger.warning("订阅 #%d 不存在", sub_id)
@@ -281,15 +284,18 @@ class TaskScheduler:
 
         proxies = await self.db.get_proxies_by_source(sub.url)
         if not proxies:
-            logger.info("订阅 #%d 没有代理，跳过验证", sub_id)
+            logger.info("订阅 #%d 没有节点，跳过验证", sub_id)
             return
 
-        logger.info("开始验证订阅 #%d 的 %d 个代理...", sub_id, len(proxies))
+        logger.info("开始验证订阅 #%d 的 %d 个节点...", sub_id, len(proxies))
 
         sub_checker = ProxyChecker(
             check_urls=self.checker.check_urls,
             timeout=self.config.check.timeout,
             max_concurrent=sub.max_concurrent,
+            socks_port=self.checker.socks_port,
+            http_port=self.checker.http_port,
+            check_mode=self.checker.check_mode,
         )
         links = [p.link for p in proxies]
         results = await sub_checker.check_batch(links)
@@ -404,6 +410,9 @@ class TaskScheduler:
                 check_urls=self.checker.check_urls,
                 timeout=self.config.check.timeout,
                 max_concurrent=source.max_concurrent,
+                socks_port=self.checker.socks_port,
+                http_port=self.checker.http_port,
+                check_mode=self.checker.check_mode,
             )
             links = [p.link for p in proxies]
             results = await sub_checker.check_batch(links)
@@ -450,30 +459,30 @@ class TaskScheduler:
             await self._fetch_single_instance_source(source.id)
 
     async def cleanup_proxies(self) -> None:
-        """清理不合格代理和空订阅源
+        """清理不合格节点和空订阅源
 
-        - 订阅源代理：连续 3 次验证失败则移除（原逻辑不变）
-        - 实例源代理：last_success_time 为空或距今超过 7 天且 fail_count > 0 才移除
+        - 订阅源节点：连续 3 次验证失败则移除（原逻辑不变）
+        - 实例源节点：last_success_time 为空或距今超过 7 天且 fail_count > 0 才移除
         """
-        # 清理订阅源代理：连续3次验证失败
+        # 清理订阅源节点：连续3次验证失败
         deleted = await self.db.delete_sub_proxies_by_fail_count(3)
         if deleted > 0:
-            logger.info("清理订阅源代理: 删除 %d 个连续3次不可用的代理", deleted)
+            logger.info("清理订阅源节点: 删除 %d 个连续3次不可用的节点", deleted)
 
-        # 清理实例源代理：连续7天无成功
+        # 清理实例源节点：连续7天无成功
         deleted_inst = await self.db.delete_instance_proxies_stale(7)
         if deleted_inst > 0:
-            logger.info("清理实例源代理: 删除 %d 个连续7天无成功的代理", deleted_inst)
+            logger.info("清理实例源节点: 删除 %d 个连续7天无成功的节点", deleted_inst)
 
-        # 清理连续30天代理数为0的订阅源
+        # 清理连续30天节点数为0的订阅源
         empty_subs = await self.db.get_subscriptions_with_empty_days(30)
         for sub in empty_subs:
-            # 再次确认该订阅源下确实没有代理
+            # 再次确认该订阅源下确实没有节点
             count = await self.db.get_proxy_count_by_source(sub.url)
             if count == 0:
                 await self.db.delete_subscription(sub.id)
                 self.remove_subscription_job(sub.id)
-                logger.info("清理订阅: 删除 #%d 连续30天无代理 (%s)", sub.id, sub.url[:50])
+                logger.info("清理订阅: 删除 #%d 连续30天无节点 (%s)", sub.id, sub.url[:50])
 
     @property
     def last_fetch_time(self) -> str:

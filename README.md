@@ -1,18 +1,18 @@
-# ProxyPool v1.0.0
+# NetHub v1.0.0
 
-自动获取、检测、维护代理节点池，提供 Web 管理界面和订阅链接输出。
+自动获取、检测、维护节点池，提供 Web 管理界面和订阅链接输出。
 
 ## 功能特性
 
 - **订阅源管理** - 数据库驱动的增删改查，每个订阅源独立配置 Crontab、延迟阈值、重试次数、并发数
 - **Crontab 定时拉取** - 每个订阅源支持 5 位 Crontab 表达式精准调度
-- **HTTP 延迟检测** - 模拟通过代理访问目标网站，测量完整请求延迟（DNS + TCP + TLS + HTTP），多目标取最大值
+- **HTTP 延迟检测** - 模拟通过节点访问目标网站，测量完整请求延迟（DNS + TCP + TLS + HTTP），多目标取最大值
 - **检测目标动态配置** - 检测目标 URL 存入数据库，页面可增删，修改即时生效，无需外部文件
 - **多协议支持** - vmess / vless / trojan / ss / hysteria2 解析与 Clash 配置生成
-- **自动清理** - 连续 3 次验证失败的代理自动移除；连续 30 天无代理的订阅源自动删除
-- **单页面管理** - 订阅源管理 + 可用代理列表在同一页面，按订阅源 Tab 切换
-- **协议分布图** - 饼状图动态展示各协议代理数量和百分比
-- **订阅输出** - 仅输出当前可用代理，支持 V2Ray（base64）和 Clash（YAML）格式
+- **自动清理** - 连续 3 次验证失败的节点自动移除；连续 30 天无节点的订阅源自动删除
+- **单页面管理** - 订阅源管理 + 可用节点列表在同一页面，按订阅源 Tab 切换
+- **协议分布图** - 饼状图动态展示各协议节点数量和百分比
+- **订阅输出** - 仅输出当前可用节点，支持核心格式（base64）和 Clash（YAML）格式
 - **日志归档** - 按天自动归档，自动清理 7 天前的日志
 - **Docker 部署** - Docker Compose 一键启动
 
@@ -63,7 +63,7 @@ check:
 
 scheduler:
   fetch_interval: 3600           # 拉取订阅间隔（秒）
-  verify_interval: 1800          # 验证代理间隔（秒）
+  verify_interval: 1800          # 验证节点间隔（秒）
   cleanup_interval: 7200         # 清理间隔（秒）
   max_fail_count: 3              # 最大连续失败次数
 ```
@@ -79,20 +79,20 @@ scheduler:
 
 ## API 接口
 
-### 代理
+### 节点
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/proxies` | 可用代理列表 |
-| GET | `/api/proxies/all` | 所有代理 |
-| GET | `/api/proxies/grouped` | 按订阅来源分组的可用代理 |
-| DELETE | `/api/proxies/{id}` | 删除代理 |
+| GET | `/api/proxies` | 可用节点列表 |
+| GET | `/api/proxies/all` | 所有节点 |
+| GET | `/api/proxies/grouped` | 按订阅来源分组的可用节点 |
+| DELETE | `/api/proxies/{id}` | 删除节点 |
 
 ### 订阅输出
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/subscription/v2ray` | V2Ray 格式订阅（base64） |
+| GET | `/api/subscription/v2ray` | 核心格式订阅（base64） |
 | GET | `/api/subscription/clash` | Clash 格式订阅（YAML） |
 
 ### 订阅源管理
@@ -111,8 +111,8 @@ scheduler:
 |------|------|------|
 | POST | `/api/fetch` | 拉取所有订阅 |
 | POST | `/api/fetch/{sub_id}` | 拉取指定订阅 |
-| POST | `/api/verify` | 验证所有代理 |
-| POST | `/api/verify/{sub_id}` | 验证指定订阅代理 |
+| POST | `/api/verify` | 验证所有节点 |
+| POST | `/api/verify/{sub_id}` | 验证指定订阅节点 |
 
 ### 检测目标
 
@@ -131,12 +131,12 @@ scheduler:
 
 ## 订阅链接使用
 
-在代理客户端中添加以下订阅链接：
+在节点客户端中添加以下订阅链接：
 
-- **V2Ray**: `http://your-server:8080/api/subscription/v2ray`
+- **核心**: `http://your-server:8080/api/subscription/v2ray`
 - **Clash**: `http://your-server:8080/api/subscription/clash`
 
-> 订阅内容仅包含延迟低于阈值的可用代理，随代理池自动更新。
+> 订阅内容仅包含延迟低于阈值的可用节点，随节点池自动更新。
 
 ## 支持协议
 
@@ -150,10 +150,10 @@ scheduler:
 
 ## 延迟检测原理
 
-延迟检测模拟真实上网场景：通过代理服务器访问目标检测 URL，测量完整请求延迟。
+延迟检测模拟真实上网场景：通过转发服务访问目标检测 URL，测量完整请求延迟。
 
 ```
-客户端 → 代理服务器 → 目标网站
+客户端 → 转发服务 → 目标网站
          ├── DNS 解析
          ├── TCP 连接建立
          ├── TLS 握手（HTTPS 目标）
@@ -176,14 +176,14 @@ proxy_pool/
 │   ├── models.py            # 数据模型（ProxyInfo / ProxyDBRecord / SubscriptionRecord）
 │   ├── parser.py            # 订阅拉取 & 解析（5 协议）
 │   ├── checker.py           # HTTP 延迟检测（多目标取最大值）
-│   ├── generator.py         # V2Ray / Clash 订阅生成
+│   ├── generator.py         # 核心 / Clash 订阅生成
 │   ├── scheduler.py         # APScheduler 定时任务调度
 │   ├── routers/
 │   │   ├── api.py           # REST API 路由
 │   │   └── web.py           # Web 页面路由
 │   └── templates/
 │       ├── base.html        # 基础模板
-│       ├── index.html       # 主页面（管理 + 代理列表）
+│       ├── index.html       # 主页面（管理 + 节点列表）
 │       └── subscription.html # 订阅链接页
 ├── logs/                    # 日志目录（自动归档）
 ├── config.yaml              # 配置文件

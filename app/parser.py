@@ -1,5 +1,5 @@
 from __future__ import annotations
-"""订阅解析模块 - 拉取和解析代理订阅链接
+"""订阅解析模块 - 拉取和解析节点订阅链接
 
 核心解析逻辑移植自 Proxy_List/get_connected_proxies/get_connected_proxies.py
 支持 vmess / vless / trojan / ss / hysteria2 五种协议

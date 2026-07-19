@@ -17,7 +17,7 @@ router = APIRouter()
 
 @router.get("/")
 async def index(request: Request):
-    """代理列表主页"""
+    """节点列表主页"""
     db = get_db()
     config = get_config()
     templates = get_templates()
@@ -39,11 +39,11 @@ async def index(request: Request):
         [dict(asdict(s)) for s in instance_sources],
         ensure_ascii=False,
     )
-    # 计算每个订阅源的可用代理数量
+    # 计算每个订阅源的可用节点数量
     sub_available_counts = {}
     for sub in subscriptions:
         sub_available_counts[sub.url] = len(grouped.get(sub.url, []))
-    # 计算每个服务实例源的可用代理数量
+    # 计算每个服务实例源的可用节点数量
     inst_available_counts = {}
     for inst in instance_sources:
         source_tag = f"instance:{inst.base_url}"
