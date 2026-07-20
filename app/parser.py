@@ -2,7 +2,7 @@ from __future__ import annotations
 """订阅解析模块 - 拉取和解析节点订阅链接
 
 核心解析逻辑移植自 Proxy_List/get_connected_proxies/get_connected_proxies.py
-支持 vmess / vless / trojan / ss / hysteria2 五种协议
+支持 vmess / vless / trojan / ss / hysteria2 / socks5 / socks4 / http / https 协议
 """
 
 import base64
@@ -29,18 +29,23 @@ async def fetch_subscription(url: str, timeout: float = 15.0) -> str:
 def parse_subscription(content: str) -> list[ProxyInfo]:
     """解析订阅内容，返回 ProxyInfo 列表
 
-    支持 vmess / vless / trojan / ss / hysteria2 协议
+    支持 vmess / vless / trojan / ss / hysteria2 / socks5 / socks4 / http / https 协议
     自动检测 base64 编码的订阅内容并解码
     """
     share_links: list[ProxyInfo] = []
     lines = content.strip().split("\n")
 
+    # 支持的协议前缀
+    supported_prefixes = (
+        "vmess://", "vless://", "trojan://", "ss://",
+        "hysteria2://", "hy2://",
+        "socks5://", "socks4://", "socks4a://",
+        "http://", "https://",
+    )
+
     # 检测是否为 base64 编码的订阅内容
     has_protocol_prefix = any(
-        line.strip().startswith((
-            "vmess://", "vless://", "trojan://", "ss://",
-            "hysteria2://", "hy2://",
-        ))
+        line.strip().startswith(supported_prefixes)
         for line in lines if line.strip()
     )
 
@@ -67,6 +72,11 @@ def parse_subscription(content: str) -> list[ProxyInfo]:
             info = _parse_ss(line)
         elif line.startswith("hysteria2://") or line.startswith("hy2://"):
             info = _parse_hysteria2(line)
+        elif line.startswith(("socks5://", "socks4://", "socks4a://")):
+            info = _parse_socks(line)
+        elif line.startswith(("http://", "https://")) and "#" in line:
+            # 仅当 http/https 链接带 #fragment 时视为代理节点（避免误判普通 URL）
+            info = _parse_http_proxy(line)
         else:
             info = None
 
@@ -205,6 +215,56 @@ def _parse_hysteria2(line: str) -> ProxyInfo | None:
         port = str(parsed.port) if parsed.port else ""
         return ProxyInfo(
             protocol="hysteria2",
+            name=name,
+            address=address,
+            port=port,
+            link=line,
+        )
+    except Exception:
+        return None
+
+
+def _parse_socks(line: str) -> ProxyInfo | None:
+    """解析 socks5:// / socks4:// / socks4a:// 链接
+
+    格式: socks5://[user:pass@]host:port[#name]
+    """
+    try:
+        parsed = urlparse(line)
+        address = parsed.hostname or ""
+        port = str(parsed.port) if parsed.port else ""
+        if not address or not port:
+            return None
+        name = unquote(parsed.fragment) if parsed.fragment else f"{address}:{port}"
+        # 统一协议名
+        protocol = "socks5" if line.lower().startswith("socks5://") else "socks4"
+        return ProxyInfo(
+            protocol=protocol,
+            name=name,
+            address=address,
+            port=port,
+            link=line,
+        )
+    except Exception:
+        return None
+
+
+def _parse_http_proxy(line: str) -> ProxyInfo | None:
+    """解析 http:// / https:// 代理链接
+
+    格式: http://[user:pass@]host:port[#name]
+    仅当带 #fragment 时视为代理节点（避免误判普通 URL）
+    """
+    try:
+        parsed = urlparse(line)
+        address = parsed.hostname or ""
+        port = str(parsed.port) if parsed.port else ""
+        if not address or not port:
+            return None
+        name = unquote(parsed.fragment) if parsed.fragment else f"{address}:{port}"
+        protocol = "https" if line.lower().startswith("https://") else "http"
+        return ProxyInfo(
+            protocol=protocol,
             name=name,
             address=address,
             port=port,

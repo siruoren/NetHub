@@ -265,6 +265,10 @@ class ProxyChecker:
                 return ProxyChecker._ss_to_xray(link)
             elif link.startswith("hysteria2://") or link.startswith("hy2://"):
                 return ProxyChecker._hysteria2_to_xray(link)
+            elif link.startswith(("socks5://", "socks4://", "socks4a://")):
+                return ProxyChecker._socks_to_xray(link)
+            elif link.startswith(("http://", "https://")) and "#" in link:
+                return ProxyChecker._http_to_xray(link)
         except Exception:
             pass
         return None
@@ -629,6 +633,52 @@ class ProxyChecker:
         except Exception:
             return None
 
+    @staticmethod
+    def _socks_to_xray(link: str) -> dict | None:
+        """socks5:// / socks4:// / socks4a:// 分享链接转内核 outbound"""
+        try:
+            parsed = urlparse(link)
+            address = parsed.hostname or ""
+            port = parsed.port or 0
+            if not address or not port:
+                return None
+
+            servers = [{"address": address, "port": port}]
+            user = unquote(parsed.username) if parsed.username else ""
+            password = unquote(parsed.password) if parsed.password else ""
+            if user:
+                servers[0]["users"] = [{"user": user, "pass": password}]
+
+            return {
+                "protocol": "socks",
+                "settings": {"servers": servers},
+            }
+        except Exception:
+            return None
+
+    @staticmethod
+    def _http_to_xray(link: str) -> dict | None:
+        """http:// / https:// 代理链接转内核 outbound"""
+        try:
+            parsed = urlparse(link)
+            address = parsed.hostname or ""
+            port = parsed.port or 0
+            if not address or not port:
+                return None
+
+            servers = [{"address": address, "port": port}]
+            user = unquote(parsed.username) if parsed.username else ""
+            password = unquote(parsed.password) if parsed.password else ""
+            if user:
+                servers[0]["users"] = [{"user": user, "pass": password}]
+
+            return {
+                "protocol": "http",
+                "settings": {"servers": servers},
+            }
+        except Exception:
+            return None
+
     # ---- TCP/TLS 直连检测（回退方案） ----
 
     async def _check_tcp_tls(self, info: ProxyConnInfo) -> float | None:
@@ -734,6 +784,10 @@ class ProxyChecker:
                 return self._parse_ss(link)
             elif link.startswith("hysteria2://") or link.startswith("hy2://"):
                 return self._parse_hysteria2(link)
+            elif link.startswith(("socks5://", "socks4://", "socks4a://")):
+                return self._parse_socks(link)
+            elif link.startswith(("http://", "https://")) and "#" in link:
+                return self._parse_http_proxy(link)
         except Exception:
             pass
         return None
@@ -843,6 +897,36 @@ class ProxyChecker:
             return ProxyConnInfo(
                 host=address, port=int(port),
                 use_tls=True, protocol="hysteria2",
+            )
+        except Exception:
+            return None
+
+    def _parse_socks(self, link: str) -> ProxyConnInfo | None:
+        try:
+            parsed = urlparse(link)
+            address = parsed.hostname or ""
+            port = parsed.port or 0
+            if not address or not port:
+                return None
+            protocol = "socks5" if link.lower().startswith("socks5://") else "socks4"
+            return ProxyConnInfo(
+                host=address, port=int(port),
+                use_tls=False, protocol=protocol,
+            )
+        except Exception:
+            return None
+
+    def _parse_http_proxy(self, link: str) -> ProxyConnInfo | None:
+        try:
+            parsed = urlparse(link)
+            address = parsed.hostname or ""
+            port = parsed.port or 0
+            if not address or not port:
+                return None
+            protocol = "https" if link.lower().startswith("https://") else "http"
+            return ProxyConnInfo(
+                host=address, port=int(port),
+                use_tls=(protocol == "https"), protocol=protocol,
             )
         except Exception:
             return None
