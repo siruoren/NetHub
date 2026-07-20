@@ -582,13 +582,15 @@ async def export_config():
     }
 
     from fastapi.responses import Response
+    from datetime import datetime, timedelta, timezone
     import json
     content = json.dumps(config, ensure_ascii=False, indent=2)
+    ts = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d_%H%M%S")
     return Response(
         content=content,
         media_type="application/json; charset=utf-8",
         headers={
-            "Content-Disposition": 'attachment; filename="nethub_config.json"',
+            "Content-Disposition": f'attachment; filename="nethub_config_{ts}.json"',
         },
     )
 
