@@ -23,12 +23,16 @@ class CheckConfig:
     timeout: float = 5.0
     max_concurrent: int = 50
     latency_threshold: float = 1500.0
+    check_mode: str = "auto"  # 检测模式: "auto" / "http" / "tcp"
+    socks_port: int = 1080  # 本地转发端口（ConnectivityMonitor 使用）
+    http_port: int = 1081  # 本地 HTTP 转发端口
+    kernel_path: str = "xray"  # 内核可执行文件路径
 
 
 @dataclass
 class SchedulerConfig:
     fetch_interval: int = 3600  # 拉取订阅间隔（秒）
-    verify_interval: int = 1800  # 验证代理间隔（秒）
+    verify_interval: int = 1800  # 验证节点间隔（秒）
     cleanup_interval: int = 7200  # 清理间隔（秒）
     max_fail_count: int = 3  # 最大连续失败次数
 
@@ -75,6 +79,10 @@ def load_config(path: str = "config.yaml") -> AppConfig:
             "timeout": 5.0,
             "max_concurrent": 50,
             "latency_threshold": 1500.0,
+            "check_mode": "auto",
+            "socks_port": 1080,
+            "http_port": 1081,
+            "kernel_path": "xray",
         },
         "scheduler": {
             "fetch_interval": 3600,

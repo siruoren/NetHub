@@ -1,4 +1,4 @@
-"""REST API 路由 - JSON 格式的代理数据接口"""
+"""REST API 路由 - JSON 格式的节点数据接口"""
 
 import asyncio
 import logging
@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app import get_checker, get_config, get_db, get_scheduler
-from app.generator import generate_clash_subscription, generate_v2ray_subscription
+from app.generator import generate_clash_subscription, generate_plain_subscription, generate_v2ray_subscription
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ router = APIRouter(prefix="/api")
 
 @router.get("/proxies")
 async def get_available_proxies():
-    """获取所有可用代理列表（latency_ms > 0 且 fail_count=0）"""
+    """获取所有可用节点列表（latency_ms > 0 且 fail_count=0）"""
     db = get_db()
     config = get_config()
     proxies = await db.get_available_proxies(config.check.latency_threshold)
@@ -29,7 +29,7 @@ async def get_available_proxies():
 
 @router.get("/proxies/all")
 async def get_all_proxies():
-    """获取所有代理（含不可用）"""
+    """获取所有节点（含不可用）"""
     db = get_db()
     proxies = await db.get_all_proxies()
     return {
@@ -40,7 +40,7 @@ async def get_all_proxies():
 
 @router.delete("/proxies/{proxy_id}")
 async def delete_proxy(proxy_id: int):
-    """删除指定代理"""
+    """删除指定节点"""
     db = get_db()
     await db.delete_proxy(proxy_id)
     return {"message": "deleted"}
@@ -48,20 +48,39 @@ async def delete_proxy(proxy_id: int):
 
 @router.get("/subscription/v2ray")
 async def v2ray_subscription():
-    """获取 v2ray 格式订阅（base64 编码）"""
+    """获取纯文本格式订阅（每行一条原始代理 URI）
+
+    输出所有延迟达标且未失败的节点（含检测通过的实例源节点）
+    """
     db = get_db()
     config = get_config()
-    proxies = await db.get_available_proxies(config.check.latency_threshold)
+    proxies = await db.get_subscription_output_proxies(config.check.latency_threshold)
     content = generate_v2ray_subscription(proxies)
+    return _subscription_response(content, "text/plain")
+
+
+@router.get("/subscription/plain")
+async def plain_subscription():
+    """获取纯文本格式订阅（每行一条原始代理 URI，参照 subdom.txt 格式）
+
+    输出所有延迟达标且未失败的节点（含检测通过的实例源节点）
+    """
+    db = get_db()
+    config = get_config()
+    proxies = await db.get_subscription_output_proxies(config.check.latency_threshold)
+    content = generate_plain_subscription(proxies)
     return _subscription_response(content, "text/plain")
 
 
 @router.get("/subscription/clash")
 async def clash_subscription():
-    """获取 Clash 格式订阅（YAML）"""
+    """获取 Clash 格式订阅（YAML）
+
+    输出所有延迟达标且未失败的节点（含检测通过的实例源节点）
+    """
     db = get_db()
     config = get_config()
-    proxies = await db.get_available_proxies(config.check.latency_threshold)
+    proxies = await db.get_subscription_output_proxies(config.check.latency_threshold)
     content = generate_clash_subscription(proxies)
     return _subscription_response(content, "text/yaml")
 
@@ -91,7 +110,7 @@ async def manual_fetch_subscription(sub_id: int):
 
 @router.post("/verify")
 async def manual_verify():
-    """手动触发验证代理"""
+    """手动触发验证节点"""
     scheduler = get_scheduler()
     if scheduler._verifying:
         return {"message": "验证任务正在进行中"}
@@ -101,7 +120,7 @@ async def manual_verify():
 
 @router.post("/verify/{sub_id}")
 async def manual_verify_subscription(sub_id: int):
-    """手动触发验证指定订阅源的代理"""
+    """手动触发验证指定订阅源的节点"""
     db = get_db()
     sub = await db.get_subscription_by_id(sub_id)
     if not sub:
@@ -109,7 +128,7 @@ async def manual_verify_subscription(sub_id: int):
         raise HTTPException(status_code=404, detail="订阅不存在")
     scheduler = get_scheduler()
     asyncio.create_task(scheduler.verify_subscription_proxies(sub_id))
-    return {"message": f"已触发订阅 #{sub_id} 的代理验证"}
+    return {"message": f"已触发订阅 #{sub_id} 的节点验证"}
 
 
 @router.get("/stats")
@@ -133,9 +152,10 @@ async def health_check():
 
 @router.get("/subscriptions")
 async def get_subscriptions():
-    """获取所有订阅源"""
+    """获取所有订阅源（过滤 nethub 内部地址）"""
     db = get_db()
     subs = await db.get_all_subscriptions()
+    subs = [s for s in subs if "nethub" not in s.url.lower()]
     return {
         "total": len(subs),
         "subscriptions": [_subscription_to_dict(s) for s in subs],
@@ -208,7 +228,7 @@ async def auto_add_subscription(req: AutoSubRequest):
     asyncio.create_task(fetch_and_verify())
     return {
         "status": "added",
-        "message": "订阅已添加，正在拉取并验证代理",
+        "message": "订阅已添加，正在拉取并验证节点",
         "subscription": _subscription_to_dict(sub),
     }
 
@@ -270,7 +290,7 @@ async def delete_subscription(sub_id: int):
 
 @router.get("/proxies/grouped")
 async def get_proxies_grouped():
-    """获取按订阅来源分组的可用代理"""
+    """获取按订阅来源分组的可用节点"""
     db = get_db()
     config = get_config()
     grouped = await db.get_proxies_grouped_by_source(config.check.latency_threshold)
@@ -307,7 +327,7 @@ def _subscription_response(content: str, content_type: str):
         headers={
             "Content-Disposition": 'attachment; filename="subscription"',
             "Profile-Update-Interval": "24",
-            "Profile-Title": "ProxyPool",
+            "Profile-Title": "NetHub",
         },
     )
 
@@ -369,3 +389,149 @@ async def delete_check_url(url_id: int):
     if checker:
         checker.check_urls = [u["url"] for u in await db.get_check_urls()]
     return {"message": "deleted"}
+
+
+# ---- 服务实例源管理 ----
+
+@router.get("/instance-sources")
+async def get_instance_sources():
+    """获取所有服务实例源"""
+    db = get_db()
+    sources = await db.get_all_instance_sources()
+    return {
+        "total": len(sources),
+        "sources": [_instance_source_to_dict(s) for s in sources],
+    }
+
+
+class InstanceSourceCreate(BaseModel):
+    """添加服务实例源请求体"""
+    base_url: str
+    username: str
+    password: str
+    crontab: Optional[str] = "*/10 * * * *"
+    latency_threshold: Optional[float] = 1500.0
+    max_concurrent: Optional[int] = 50
+
+
+@router.post("/instance-sources")
+async def add_instance_source(req: InstanceSourceCreate):
+    """添加服务实例源"""
+    from fastapi import HTTPException
+    if not req.base_url:
+        raise HTTPException(status_code=400, detail="服务实例地址不能为空")
+    db = get_db()
+    source = await db.add_instance_source(
+        base_url=req.base_url,
+        username=req.username,
+        password=req.password,
+        crontab=req.crontab or "*/10 * * * *",
+        latency_threshold=req.latency_threshold or 1500.0,
+        max_concurrent=req.max_concurrent or 50,
+        enabled=True,
+    )
+    if not source:
+        raise HTTPException(status_code=409, detail="服务实例地址已存在")
+    # 注册定时任务
+    scheduler = get_scheduler()
+    scheduler._add_instance_source_job(source)
+    # 自动触发首次获取
+    asyncio.create_task(scheduler._fetch_single_instance_source(source.id))
+    return _instance_source_to_dict(source)
+
+
+@router.put("/instance-sources/{source_id}")
+async def update_instance_source(source_id: int, base_url: str = None, username: str = None,
+                                  password: str = None, crontab: str = None,
+                                  latency_threshold: float = None, max_concurrent: int = None,
+                                  enabled: bool = None):
+    """更新服务实例源"""
+    from fastapi import HTTPException
+    db = get_db()
+    kwargs = {}
+    if base_url is not None:
+        kwargs["base_url"] = base_url
+    if username is not None:
+        kwargs["username"] = username
+    if password is not None:
+        kwargs["password"] = password
+    if crontab is not None:
+        kwargs["crontab"] = crontab
+    if latency_threshold is not None:
+        kwargs["latency_threshold"] = latency_threshold
+    if max_concurrent is not None:
+        kwargs["max_concurrent"] = max_concurrent
+    if enabled is not None:
+        kwargs["enabled"] = enabled
+
+    success = await db.update_instance_source(source_id, **kwargs)
+    if not success:
+        raise HTTPException(status_code=404, detail="服务实例源不存在或无更新")
+    # 刷新定时任务
+    source = await db.get_instance_source_by_id(source_id)
+    scheduler = get_scheduler()
+    scheduler.refresh_instance_source_job(source)
+
+    if source.enabled:
+        # 启用时自动获取
+        asyncio.create_task(scheduler._fetch_single_instance_source(source.id))
+    else:
+        await db.update_instance_fetch_status(source_id, "idle")
+    return _instance_source_to_dict(source)
+
+
+@router.delete("/instance-sources/{source_id}")
+async def delete_instance_source(source_id: int):
+    """删除服务实例源"""
+    from fastapi import HTTPException
+    db = get_db()
+    success = await db.delete_instance_source(source_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="服务实例源不存在")
+    # 移除定时任务
+    scheduler = get_scheduler()
+    scheduler.remove_instance_source_job(source_id)
+    return {"message": "deleted"}
+
+
+@router.post("/instance-sources/{source_id}/fetch")
+async def manual_fetch_instance_source(source_id: int):
+    """手动触发获取指定服务实例源的已连接节点"""
+    db = get_db()
+    source = await db.get_instance_source_by_id(source_id)
+    if not source:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="服务实例源不存在")
+    scheduler = get_scheduler()
+    asyncio.create_task(scheduler._fetch_single_instance_source(source_id))
+    return {"message": f"已触发实例源 #{source_id} 的获取任务"}
+
+
+@router.post("/instance-sources/{source_id}/import-subs")
+async def import_instance_subscriptions(source_id: int):
+    """手工导入服务实例中的订阅源到本地订阅源表"""
+    db = get_db()
+    source = await db.get_instance_source_by_id(source_id)
+    if not source:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="服务实例源不存在")
+    scheduler = get_scheduler()
+    count = await scheduler.import_instance_subscriptions(source_id)
+    return {"message": f"已导入 {count} 个订阅源", "imported": count}
+
+
+def _instance_source_to_dict(source) -> dict:
+    """将 InstanceSourceRecord 转为 API 响应字典"""
+    return {
+        "id": source.id,
+        "base_url": source.base_url,
+        "username": source.username,
+        "password": source.password,
+        "crontab": source.crontab,
+        "latency_threshold": source.latency_threshold,
+        "max_concurrent": source.max_concurrent,
+        "enabled": source.enabled,
+        "created_at": source.created_at,
+        "total_count": source.total_count,
+        "fetch_status": source.fetch_status,
+    }

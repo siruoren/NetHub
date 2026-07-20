@@ -1,15 +1,44 @@
 FROM python:3.11-slim
 
+# GitHub 下载镜像前缀（国内构建可设为 https://ghgo.xyz/ 等）
+ARG GH_MIRROR="https://github.geekery.cn/"
+
 WORKDIR /app
 
 # 安装系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
+    curl \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
+
 
 # 安装 Python 依赖
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+
+# 下载核心（固定版本 + 超时重试）
+# v2ray-core v5.23.0
+RUN curl -fsSL --connect-timeout 30 --max-time 180 --retry 3 --retry-delay 5 \
+    "${GH_MIRROR}https://github.com/v2fly/v2ray-core/releases/download/v5.51.2/v2ray-linux-64.zip" \
+    -o /tmp/core.zip \
+    && unzip -o /tmp/core.zip -d /usr/local/bin/ v2ray \
+    && chmod +x /usr/local/bin/v2ray \
+    && rm -f /tmp/core.zip
+
+# Xray-core v25.7.16
+RUN curl -fsSL --connect-timeout 30 --max-time 180 --retry 3 --retry-delay 5 \
+    "${GH_MIRROR}https://github.com/XTLS/Xray-core/releases/download/v26.7.11/Xray-macos-64.zip" \
+    -o /tmp/xray.zip \
+    && unzip -o /tmp/xray.zip -d /usr/local/bin/ xray \
+    && chmod +x /usr/local/bin/xray \
+    && rm -f /tmp/xray.zip
+
+# 下载 geosite.dat / geoip.dat 数据文件
+RUN curl -fsSL --connect-timeout 30 "https://ghp.keleyaa.com/https://github.com/v2fly/domain-list-community/releases/download/20260717032527/dlc.dat" -o /usr/local/bin/geosite.dat 
+RUN curl -fsSL --connect-timeout 30 "https://gitproxy.mrhjx.cn/https://github.com/v2fly/geoip/releases/download/202607171233/geoip.dat" -o /usr/local/bin/geoip.dat
+
 
 # 复制代码
 COPY . .

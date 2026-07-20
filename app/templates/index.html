@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}ProxyPool - 代理池管理{% endblock %}
+{% block title %}NetHub - 节点池管理{% endblock %}
 
 {% block content %}
 <!-- 统计卡片 -->
@@ -8,7 +8,7 @@
     <div class="col-md-3">
         <div class="card stat-card text-white bg-primary">
             <div class="card-body">
-                <h6 class="card-title"><i class="bi bi-collection"></i> 总代理数</h6>
+                <h6 class="card-title"><i class="bi bi-collection"></i> 总节点数</h6>
                 <h3 class="mb-0">{{ stats.total }}</h3>
             </div>
         </div>
@@ -39,9 +39,9 @@
     </div>
 </div>
 
-<!-- 协议分布饼状图 + 订阅管理 -->
+<!-- 协议分布饼状图 + 订阅管理 + 实例源管理 -->
 <div class="row mb-4">
-    <div class="col-md-5">
+    <div class="col-md-4">
         <div class="card h-100">
             <div class="card-body">
                 <h6 class="card-title">协议分布</h6>
@@ -51,7 +51,7 @@
             </div>
         </div>
     </div>
-    <div class="col-md-7">
+    <div class="col-md-4">
         <div class="card h-100">
             <div class="card-header d-flex justify-content-between align-items-center py-2">
                 <span class="fw-bold"><i class="bi bi-gear"></i> 订阅源管理</span>
@@ -177,11 +177,110 @@
             </div>
         </div>
     </div>
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center py-2">
+                <span class="fw-bold"><i class="bi bi-hdd-network"></i> 服务实例源</span>
+                <button class="btn btn-primary btn-sm" data-bs-toggle="collapse" data-bs-target="#addInstanceForm">
+                    <i class="bi bi-plus-lg"></i> 添加
+                </button>
+            </div>
+            <div class="card-body">
+                <!-- 添加实例源表单（可折叠） -->
+                <div class="collapse mb-3" id="addInstanceForm">
+                    <div class="border rounded p-3 bg-light">
+                        <div class="row g-2">
+                            <div class="col-12">
+                                <input type="url" id="inst-url" class="form-control form-control-sm" placeholder="服务实例地址（如 http://192.168.1.1:2017）">
+                            </div>
+                            <div class="col-md-6">
+                                <input type="text" id="inst-user" class="form-control form-control-sm" placeholder="用户名">
+                            </div>
+                            <div class="col-md-6">
+                                <input type="password" id="inst-pass" class="form-control form-control-sm" placeholder="密码">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label mb-0 small">Crontab</label>
+                                <input type="text" id="inst-crontab" class="form-control form-control-sm" value="*/10 * * * *">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label mb-0 small">延迟阈值(ms)</label>
+                                <input type="number" id="inst-latency" class="form-control form-control-sm" value="1500">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label mb-0 small">并发数</label>
+                                <input type="number" id="inst-concurrent" class="form-control form-control-sm" value="50">
+                            </div>
+                            <div class="col-12 mt-2 text-end">
+                                <button class="btn btn-primary btn-sm" onclick="addInstanceSource()">
+                                    <i class="bi bi-check-lg"></i> 确认添加
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- 实例源列表 -->
+                <div class="table-responsive" style="max-height:280px; overflow-y:auto;">
+                    <table class="table table-hover table-sm mb-0" style="white-space:nowrap;">
+                        <thead class="table-light sticky-top">
+                            <tr>
+                                <th>#</th>
+                                <th>地址</th>
+                                <th>总数</th>
+                                <th>Crontab</th>
+                                <th>状态</th>
+                                <th>更新</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for inst in instance_sources %}
+                            <tr>
+                                <td>{{ inst.id }}</td>
+                                <td><code style="font-size:0.75rem">{{ inst.base_url[:30] }}{% if inst.base_url|length > 30 %}...{% endif %}</code></td>
+                                <td><span class="badge bg-secondary">{{ inst.total_count }}</span></td>
+                                <td><code style="font-size:0.8rem">{{ inst.crontab }}</code></td>
+                                <td>
+                                    <span class="badge {{ 'bg-success' if inst.enabled else 'bg-secondary' }}" style="cursor:pointer"
+                                          onclick="toggleInstanceSource({{ inst.id }}, {{ 'false' if inst.enabled else 'true' }})">
+                                        {{ '启用' if inst.enabled else '禁用' }}
+                                    </span>
+                                </td>
+                                <td>
+                                    {% if inst.fetch_status == 'updating' %}
+                                    <span class="badge bg-warning text-dark">获取中</span>
+                                    {% elif inst.fetch_status == 'success' %}
+                                    <span class="badge bg-success">成功</span>
+                                    {% elif inst.fetch_status == 'failed' %}
+                                    <span class="badge bg-danger">失败</span>
+                                    {% else %}
+                                    <span class="badge bg-secondary">待获取</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <button class="btn btn-outline-primary btn-sm py-0 px-1" style="font-size:0.7rem"
+                                            onclick="editInstanceSource({{ inst.id }})">编辑</button>
+                                    <button class="btn btn-outline-success btn-sm py-0 px-1" style="font-size:0.7rem"
+                                            onclick="fetchInstanceSource({{ inst.id }})">获取</button>
+                                    <button class="btn btn-outline-info btn-sm py-0 px-1" style="font-size:0.7rem"
+                                            onclick="importSubs({{ inst.id }})">导入订阅</button>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                            {% if not instance_sources %}
+                            <tr><td colspan="7" class="text-center text-muted py-2">暂无服务实例源，请点击"添加"</td></tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 
 <!-- 操作按钮 -->
 <div class="d-flex justify-content-between align-items-center mb-3">
-    <h5 class="mb-0">可用代理</h5>
+    <h5 class="mb-0">可用节点</h5>
     <div>
         <small class="text-muted me-2">
             {% if last_fetch_time %}上次拉取: {{ last_fetch_time[:19] }}{% endif %}
@@ -200,18 +299,25 @@
     </div>
 </div>
 
-<!-- 按订阅源 Tab 切换（只显示有可用代理的订阅源） -->
+<!-- 按来源 Tab 切换（订阅源 + 服务实例源，只显示有可用节点的） -->
 {% set available_subs = [] %}
 {% for sub in subscriptions %}
 {% if sub_available_counts.get(sub.url, 0) > 0 %}
 {% if available_subs.append(sub) %}{% endif %}
 {% endif %}
 {% endfor %}
-{% if available_subs %}
+{% set available_insts = [] %}
+{% for inst in instance_sources %}
+{% if inst_available_counts.get(inst.id, 0) > 0 %}
+{% if available_insts.append(inst) %}{% endif %}
+{% endif %}
+{% endfor %}
+{% set has_any = available_subs or available_insts %}
+{% if has_any %}
 <ul class="nav nav-tabs mb-0" id="subTab" role="tablist">
     {% for sub in available_subs %}
     <li class="nav-item" role="presentation" data-bs-toggle="tooltip" data-bs-placement="bottom" title="{{ sub.url }}">
-        <button class="nav-link {{ 'active' if loop.index == 1 else '' }}" id="tab-{{ sub.id }}"
+        <button class="nav-link {{ 'active' if loop.index == 1 and not available_insts else '' }}" id="tab-{{ sub.id }}"
                 data-bs-toggle="tab" data-bs-target="#pane-{{ sub.id }}" type="button" role="tab"
                 data-sub-id="{{ sub.id }}">
             订阅 #{{ sub.id }}
@@ -219,16 +325,26 @@
         </button>
     </li>
     {% endfor %}
+    {% for inst in available_insts %}
+    <li class="nav-item" role="presentation" data-bs-toggle="tooltip" data-bs-placement="bottom" title="{{ inst.base_url }}">
+        <button class="nav-link {{ 'active' if loop.index == 1 and not available_subs else '' }}" id="tab-inst-{{ inst.id }}"
+                data-bs-toggle="tab" data-bs-target="#pane-inst-{{ inst.id }}" type="button" role="tab"
+                data-sub-id="inst-{{ inst.id }}">
+            实例 #{{ inst.id }}
+            <span class="badge bg-success ms-1">{{ inst_available_counts.get(inst.id, 0) }}</span>
+        </button>
+    </li>
+    {% endfor %}
 </ul>
 <div class="tab-content border border-top-0 rounded-bottom p-2 bg-white">
     {% for sub in available_subs %}
-    <div class="tab-pane fade {{ 'show active' if loop.index == 1 else '' }}" id="pane-{{ sub.id }}" role="tabpanel">
+    <div class="tab-pane fade {{ 'show active' if loop.index == 1 and not available_insts else '' }}" id="pane-{{ sub.id }}" role="tabpanel">
         <div class="d-flex justify-content-end mb-2 gap-1">
             <button class="btn btn-primary btn-sm" onclick="triggerFetchSub({{ sub.id }})">
                 <i class="bi bi-cloud-download"></i> 拉取此订阅
             </button>
             <button class="btn btn-outline-primary btn-sm" onclick="triggerVerifySub({{ sub.id }})">
-                <i class="bi bi-arrow-repeat"></i> 验证此订阅代理
+                <i class="bi bi-arrow-repeat"></i> 验证此订阅节点
             </button>
         </div>
         <div class="table-responsive">
@@ -266,7 +382,57 @@
                     </tr>
                     {% endfor %}
                     {% if not grouped.get(sub.url) %}
-                    <tr><td colspan="8" class="text-center text-muted py-3">暂无可用代理，请先拉取此订阅</td></tr>
+                    <tr><td colspan="8" class="text-center text-muted py-3">暂无可用节点，请先拉取此订阅</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endfor %}
+    {% for inst in available_insts %}
+    {% set inst_source_tag = 'instance:' + inst.base_url %}
+    <div class="tab-pane fade {{ 'show active' if loop.index == 1 and not available_subs else '' }}" id="pane-inst-{{ inst.id }}" role="tabpanel">
+        <div class="d-flex justify-content-end mb-2 gap-1">
+            <button class="btn btn-success btn-sm" onclick="fetchInstanceSource({{ inst.id }})">
+                <i class="bi bi-cloud-download"></i> 获取此实例源
+            </button>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-hover table-sm mb-0" id="tbl-inst-{{ inst.id }}">
+                <thead class="table-light">
+                    <tr>
+                        <th width="30">#</th>
+                        <th>名称</th>
+                        <th>协议</th>
+                        <th>地址</th>
+                        <th>端口</th>
+                        <th class="sortable" data-sort="latency" onclick="sortTable('tbl-inst-{{ inst.id }}','latency',this)">延迟 <i class="bi bi-arrow-down-up"></i></th>
+                        <th class="sortable" data-sort="time" onclick="sortTable('tbl-inst-{{ inst.id }}','time',this)">入库时间 <i class="bi bi-arrow-down-up"></i></th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for proxy in grouped.get(inst_source_tag, []) %}
+                    <tr data-latency="{{ proxy.latency_ms }}" data-time="{{ proxy.created_at }}">
+                        <td>{{ loop.index }}</td>
+                        <td title="{{ proxy.name }}">{{ proxy.name[:30] }}{% if proxy.name|length > 30 %}...{% endif %}</td>
+                        <td><span class="badge bg-secondary">{{ proxy.protocol }}</span></td>
+                        <td><code>{{ proxy.address }}</code></td>
+                        <td>{{ proxy.port }}</td>
+                        <td>
+                            <span class="{{ 'latency-good' if proxy.latency_ms < 500 else ('latency-medium' if proxy.latency_ms < 1500 else 'latency-bad') }}">
+                                {{ "%.0f"|format(proxy.latency_ms) }} ms
+                            </span>
+                        </td>
+                        <td><small>{{ proxy.created_at[:19] if proxy.created_at else '-' }}</small></td>
+                        <td>
+                            <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem"
+                                    onclick="deleteProxy({{ proxy.id }})">删除</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    {% if not grouped.get(inst_source_tag) %}
+                    <tr><td colspan="8" class="text-center text-muted py-3">暂无可用节点，请先获取此实例源</td></tr>
                     {% endif %}
                 </tbody>
             </table>
@@ -277,7 +443,7 @@
 {% else %}
 <div class="card">
     <div class="card-body text-center text-muted py-4">
-        暂无可用代理
+        暂无可用节点
     </div>
 </div>
 {% endif %}
@@ -324,6 +490,55 @@
         </div>
     </div>
 </div>
+
+<!-- 编辑实例源模态框 -->
+<div class="modal fade" id="editInstanceModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">编辑服务实例源</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="edit-inst-id">
+                <div class="mb-3">
+                    <label class="form-label">服务实例地址</label>
+                    <input type="url" id="edit-inst-url" class="form-control form-control-sm">
+                </div>
+                <div class="row g-2 mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label">用户名</label>
+                        <input type="text" id="edit-inst-user" class="form-control form-control-sm">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">密码</label>
+                        <input type="password" id="edit-inst-pass" class="form-control form-control-sm">
+                    </div>
+                </div>
+                <div class="row g-2">
+                    <div class="col-md-4">
+                        <label class="form-label">Crontab</label>
+                        <input type="text" id="edit-inst-crontab" class="form-control form-control-sm">
+                        <small class="text-muted">分 时 日 月 周</small>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">延迟阈值(ms)</label>
+                        <input type="number" id="edit-inst-latency" class="form-control form-control-sm">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">并发数</label>
+                        <input type="number" id="edit-inst-concurrent" class="form-control form-control-sm">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-danger btn-sm" onclick="deleteInstanceSource(document.getElementById('edit-inst-id').value);bootstrap.Modal.getInstance(document.getElementById('editInstanceModal')).hide()">删除</button>
+                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary btn-sm" onclick="saveInstanceSource()">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block extra_head %}
@@ -334,6 +549,8 @@
 <script>
 // 订阅数据
 const subsData = {{ subscriptions_json | safe }};
+// 实例源数据
+const instData = {{ instance_sources_json | safe }};
 
 // 协议分布饼状图（显示数量和百分比）
 (function() {
@@ -458,7 +675,7 @@ async function deleteSubscription(id) {
     } catch (e) { alert('删除失败: ' + e.message); }
 }
 
-// ---- 代理操作 ----
+// ---- 节点操作 ----
 // 获取当前激活 Tab 对应的订阅 ID
 function getCurrentSubId() {
     var activeTab = document.querySelector('#subTab .nav-link.active');
@@ -514,7 +731,7 @@ async function triggerVerifySub(subId) {
 }
 
 async function deleteProxy(id) {
-    if (!confirm('确定删除该代理？')) return;
+    if (!confirm('确定删除该节点？')) return;
     try {
         await fetch('/api/proxies/' + id, { method: 'DELETE' });
         location.reload();
@@ -581,6 +798,101 @@ async function deleteCheckUrl(id, el) {
             }
         }
     } catch (e) { alert('删除失败: ' + e.message); }
+}
+
+// ---- 服务实例源管理 ----
+async function addInstanceSource() {
+    const base_url = document.getElementById('inst-url').value.trim();
+    const username = document.getElementById('inst-user').value.trim();
+    const password = document.getElementById('inst-pass').value;
+    if (!base_url) { alert('请输入服务实例地址'); return; }
+    if (!username) { alert('请输入用户名'); return; }
+    if (!password) { alert('请输入密码'); return; }
+    try {
+        const resp = await fetch('/api/instance-sources', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                base_url: base_url,
+                username: username,
+                password: password,
+                crontab: document.getElementById('inst-crontab').value.trim() || '*/10 * * * *',
+                latency_threshold: parseFloat(document.getElementById('inst-latency').value) || 1500.0,
+                max_concurrent: parseInt(document.getElementById('inst-concurrent').value) || 50,
+            }),
+        });
+        if (resp.ok) { location.reload(); }
+        else { const err = await resp.json(); alert('添加失败: ' + (err.detail || '')); }
+    } catch (e) { alert('请求失败: ' + e.message); }
+}
+
+function editInstanceSource(id) {
+    const inst = instData.find(s => s.id === id);
+    if (!inst) return;
+    document.getElementById('edit-inst-id').value = inst.id;
+    document.getElementById('edit-inst-url').value = inst.base_url;
+    document.getElementById('edit-inst-user').value = inst.username;
+    document.getElementById('edit-inst-pass').value = inst.password;
+    document.getElementById('edit-inst-crontab').value = inst.crontab;
+    document.getElementById('edit-inst-latency').value = inst.latency_threshold;
+    document.getElementById('edit-inst-concurrent').value = inst.max_concurrent;
+    new bootstrap.Modal(document.getElementById('editInstanceModal')).show();
+}
+
+async function saveInstanceSource() {
+    const id = document.getElementById('edit-inst-id').value;
+    const params = new URLSearchParams();
+    const base_url = document.getElementById('edit-inst-url').value.trim();
+    const username = document.getElementById('edit-inst-user').value.trim();
+    const password = document.getElementById('edit-inst-pass').value;
+    const crontab = document.getElementById('edit-inst-crontab').value.trim();
+    const latency = document.getElementById('edit-inst-latency').value;
+    const concurrent = document.getElementById('edit-inst-concurrent').value;
+    if (base_url) params.set('base_url', base_url);
+    if (username) params.set('username', username);
+    if (password) params.set('password', password);
+    if (crontab) params.set('crontab', crontab);
+    if (latency) params.set('latency_threshold', latency);
+    if (concurrent) params.set('max_concurrent', concurrent);
+    try {
+        const resp = await fetch('/api/instance-sources/' + id + '?' + params.toString(), { method: 'PUT' });
+        if (resp.ok) { location.reload(); }
+        else { const err = await resp.json(); alert('保存失败: ' + (err.detail || '')); }
+    } catch (e) { alert('请求失败: ' + e.message); }
+}
+
+async function toggleInstanceSource(id, enable) {
+    const params = new URLSearchParams({ enabled: enable ? 'true' : 'false' });
+    try {
+        const resp = await fetch('/api/instance-sources/' + id + '?' + params.toString(), { method: 'PUT' });
+        if (resp.ok) { location.reload(); }
+    } catch (e) { alert('操作失败: ' + e.message); }
+}
+
+async function deleteInstanceSource(id) {
+    if (!confirm('确定删除该服务实例源？')) return;
+    try {
+        await fetch('/api/instance-sources/' + id, { method: 'DELETE' });
+        location.reload();
+    } catch (e) { alert('删除失败: ' + e.message); }
+}
+
+async function fetchInstanceSource(id) {
+    try {
+        const resp = await fetch('/api/instance-sources/' + id + '/fetch', { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) { alert(data.message); setTimeout(refreshPage, 30000); }
+        else { alert('获取失败: ' + (data.detail || '')); }
+    } catch (e) { alert('请求失败: ' + e.message); }
+}
+
+async function importSubs(id) {
+    try {
+        const resp = await fetch('/api/instance-sources/' + id + '/import-subs', { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) { alert(data.message); setTimeout(refreshPage, 10000); }
+        else { alert('导入失败: ' + (data.detail || '')); }
+    } catch (e) { alert('请求失败: ' + e.message); }
 }
 
 // 初始化 Bootstrap Tooltip
