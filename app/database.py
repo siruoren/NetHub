@@ -290,12 +290,11 @@ class ProxyDatabase:
     async def get_subscription_output_proxies(self, max_latency: float) -> list[ProxyDBRecord]:
         """获取对外订阅输出节点列表
 
-        仅输出订阅源节点（延迟达标且未失败的），不包含实例源节点
+        输出所有延迟达标且未失败的节点，包含订阅源和检测通过的实例源节点
         """
         cursor = await self._db.execute(
             """SELECT * FROM proxies
-               WHERE source NOT LIKE 'instance:%'
-                 AND latency_ms > 0
+               WHERE latency_ms > 0
                  AND latency_ms <= ?
                  AND fail_count = 0
                ORDER BY latency_ms ASC""",

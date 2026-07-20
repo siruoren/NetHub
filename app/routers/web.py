@@ -86,6 +86,7 @@ async def subscription_page(request: Request):
     host = request.headers.get("host", f"localhost:{get_config().server.port}")
     scheme = request.url.scheme
 
+    plain_url = f"{scheme}://{host}/api/subscription/plain"
     v2ray_url = f"{scheme}://{host}/api/subscription/v2ray"
     clash_url = f"{scheme}://{host}/api/subscription/clash"
 
@@ -93,6 +94,7 @@ async def subscription_page(request: Request):
         request,
         "subscription.html",
         {
+            "plain_url": plain_url,
             "v2ray_url": v2ray_url,
             "clash_url": clash_url,
         },

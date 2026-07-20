@@ -1,5 +1,5 @@
 from __future__ import annotations
-"""订阅链接生成模块 - 生成 v2ray 和 Clash 格式订阅内容"""
+"""订阅链接生成模块 - 生成纯文本/Clash 格式订阅内容"""
 
 import base64
 import json
@@ -13,14 +13,21 @@ from app.models import ProxyDBRecord
 logger = logging.getLogger(__name__)
 
 
-def generate_v2ray_subscription(proxies: list[ProxyDBRecord]) -> str:
-    """生成 v2ray 格式订阅内容
+def generate_plain_subscription(proxies: list[ProxyDBRecord]) -> str:
+    """生成纯文本格式订阅内容（参照 subdom.txt 格式）
 
-    将所有节点的原始 link 换行拼接后 base64 编码
+    每行一条原始代理 URI
     """
     links = [p.link for p in proxies]
-    content = "\n".join(links)
-    return base64.b64encode(content.encode("utf-8")).decode("utf-8")
+    return "\n".join(links)
+
+
+def generate_v2ray_subscription(proxies: list[ProxyDBRecord]) -> str:
+    """生成 v2ray 格式订阅内容（纯文本，每行一条原始链接）
+
+    兼容旧名，实际输出与 generate_plain_subscription 一致
+    """
+    return generate_plain_subscription(proxies)
 
 
 def generate_clash_subscription(proxies: list[ProxyDBRecord]) -> str:

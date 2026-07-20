@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app import get_checker, get_config, get_db, get_scheduler
-from app.generator import generate_clash_subscription, generate_v2ray_subscription
+from app.generator import generate_clash_subscription, generate_plain_subscription, generate_v2ray_subscription
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +48,9 @@ async def delete_proxy(proxy_id: int):
 
 @router.get("/subscription/v2ray")
 async def v2ray_subscription():
-    """获取核心格式订阅（base64 编码）
+    """获取纯文本格式订阅（每行一条原始代理 URI）
 
-    仅输出订阅源节点（延迟达标且未失败的），不包含实例源节点
+    输出所有延迟达标且未失败的节点（含检测通过的实例源节点）
     """
     db = get_db()
     config = get_config()
@@ -59,11 +59,24 @@ async def v2ray_subscription():
     return _subscription_response(content, "text/plain")
 
 
+@router.get("/subscription/plain")
+async def plain_subscription():
+    """获取纯文本格式订阅（每行一条原始代理 URI，参照 subdom.txt 格式）
+
+    输出所有延迟达标且未失败的节点（含检测通过的实例源节点）
+    """
+    db = get_db()
+    config = get_config()
+    proxies = await db.get_subscription_output_proxies(config.check.latency_threshold)
+    content = generate_plain_subscription(proxies)
+    return _subscription_response(content, "text/plain")
+
+
 @router.get("/subscription/clash")
 async def clash_subscription():
     """获取 Clash 格式订阅（YAML）
 
-    仅输出订阅源节点（延迟达标且未失败的），不包含实例源节点
+    输出所有延迟达标且未失败的节点（含检测通过的实例源节点）
     """
     db = get_db()
     config = get_config()
