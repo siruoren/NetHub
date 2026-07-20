@@ -85,9 +85,50 @@ def _link_to_clash_proxy(link: str, fallback_name: str) -> dict | None:
             return _ss_link_to_clash(link, fallback_name)
         elif link.startswith("hysteria2://") or link.startswith("hy2://"):
             return _hysteria2_link_to_clash(link, fallback_name)
+        elif link.startswith(("socks5://", "socks4://", "socks4a://")):
+            return _socks_link_to_clash(link, fallback_name)
+        elif link.startswith(("http://", "https://")) and "#" in link:
+            return _http_link_to_clash(link, fallback_name)
     except Exception as e:
         logger.debug("转换 Clash 格式失败: %s - %s", link[:50], e)
     return None
+
+
+def _socks_link_to_clash(link: str, fallback_name: str) -> dict:
+    """socks5:// / socks4:// / socks4a:// 转 Clash proxy"""
+    parsed = urlparse(link)
+    name = unquote(parsed.fragment) if parsed.fragment else fallback_name
+    proxy = {
+        "name": name or fallback_name,
+        "type": "socks5",
+        "server": parsed.hostname or "",
+        "port": parsed.port or 1080,
+        "udp": True,
+    }
+    if parsed.username:
+        proxy["username"] = unquote(parsed.username)
+    if parsed.password:
+        proxy["password"] = unquote(parsed.password)
+    return proxy
+
+
+def _http_link_to_clash(link: str, fallback_name: str) -> dict:
+    """http:// / https:// 代理链接转 Clash proxy"""
+    parsed = urlparse(link)
+    name = unquote(parsed.fragment) if parsed.fragment else fallback_name
+    proxy = {
+        "name": name or fallback_name,
+        "type": "http",
+        "server": parsed.hostname or "",
+        "port": parsed.port or 8080,
+    }
+    if parsed.username:
+        proxy["username"] = unquote(parsed.username)
+    if parsed.password:
+        proxy["password"] = unquote(parsed.password)
+    if link.lower().startswith("https://"):
+        proxy["tls"] = True
+    return proxy
 
 
 def _vmess_link_to_clash(link: str, fallback_name: str) -> dict:
