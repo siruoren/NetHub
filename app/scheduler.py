@@ -530,15 +530,15 @@ class TaskScheduler:
         if deleted_inst > 0:
             logger.info("清理实例源节点: 删除 %d 个连续7天无成功的节点", deleted_inst)
 
-        # 清理连续30天节点数为0的订阅源
-        empty_subs = await self.db.get_subscriptions_with_empty_days(30)
+        # 清理连续7天节点数为0的订阅源
+        empty_subs = await self.db.get_subscriptions_with_empty_days(7)
         for sub in empty_subs:
             # 再次确认该订阅源下确实没有节点
             count = await self.db.get_proxy_count_by_source(sub.url)
             if count == 0:
                 await self.db.delete_subscription(sub.id)
                 self.remove_subscription_job(sub.id)
-                logger.info("清理订阅: 删除 #%d 连续30天无节点 (%s)", sub.id, sub.url[:50])
+                logger.info("清理订阅: 删除 #%d 连续7天无节点 (%s)", sub.id, sub.url[:50])
 
     @property
     def last_fetch_time(self) -> str:
