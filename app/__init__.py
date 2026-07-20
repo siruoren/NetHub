@@ -63,19 +63,14 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
     console_handler.setFormatter(log_fmt)
     root_logger.addHandler(console_handler)
 
-    # 文件：按天归档，保留7天
+    # 文件：只保留当前日志，不归档
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
-    from logging.handlers import TimedRotatingFileHandler
-    file_handler = TimedRotatingFileHandler(
+    file_handler = logging.FileHandler(
         filename=str(log_dir / "proxy_pool.log"),
-        when="midnight",
-        interval=1,
-        backupCount=7,
         encoding="utf-8",
     )
     file_handler.setFormatter(log_fmt)
-    file_handler.suffix = "%Y-%m-%d"
     root_logger.addHandler(file_handler)
 
     # 初始化组件

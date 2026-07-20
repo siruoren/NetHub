@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -87,6 +88,7 @@ class TaskScheduler:
             trigger = CronTrigger(
                 minute=parts[0], hour=parts[1], day=parts[2],
                 month=parts[3], day_of_week=parts[4],
+                jitter=random.randint(0, 600),  # 随机延迟0~600秒(10分钟内)
             )
             self.scheduler.add_job(
                 self._fetch_single_subscription,
@@ -349,6 +351,7 @@ class TaskScheduler:
             trigger = CronTrigger(
                 minute=parts[0], hour=parts[1], day=parts[2],
                 month=parts[3], day_of_week=parts[4],
+                jitter=random.randint(0, 600),  # 随机延迟0~600秒(10分钟内)
             )
             self.scheduler.add_job(
                 self._fetch_single_instance_source,
