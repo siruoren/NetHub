@@ -120,6 +120,7 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
             http_port=_config.check.http_port,
             check_mode=_config.check.check_mode,
             kernel_path=_config.check.kernel_path,
+            check_retries=_config.check.check_retries,
         )
 
         # 初始化调度器

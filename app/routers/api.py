@@ -46,6 +46,14 @@ async def delete_proxy(proxy_id: int):
     return {"message": "deleted"}
 
 
+@router.delete("/proxies")
+async def delete_all_proxies():
+    """一键清除数据库内所有节点"""
+    db = get_db()
+    count = await db.delete_all_proxies()
+    return {"message": "deleted", "count": count}
+
+
 @router.get("/subscription/v2ray")
 async def v2ray_subscription():
     """获取纯文本格式订阅（每行一条原始代理 URI）

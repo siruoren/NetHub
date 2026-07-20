@@ -234,6 +234,12 @@ class ProxyDatabase:
         await self._db.execute("DELETE FROM proxies WHERE id = ?", (proxy_id,))
         await self._db.commit()
 
+    async def delete_all_proxies(self) -> int:
+        """删除所有节点，返回删除数量"""
+        cursor = await self._db.execute("DELETE FROM proxies")
+        await self._db.commit()
+        return cursor.rowcount
+
     async def delete_proxies_by_fail_count(self, max_fail: int) -> int:
         """删除 fail_count >= max_fail 的节点，返回删除数量"""
         cursor = await self._db.execute(

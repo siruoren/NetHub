@@ -66,7 +66,8 @@ class ProxyChecker:
 
     def __init__(self, check_urls: list[str], timeout: float, max_concurrent: int,
                  socks_port: int = 0, http_port: int = 0,
-                 check_mode: str = "auto", kernel_path: str = "xray"):
+                 check_mode: str = "auto", kernel_path: str = "xray",
+                 check_retries: int = 2):
         """
         Args:
             check_urls: HTTP 检测目标 URL 列表
@@ -76,6 +77,7 @@ class ProxyChecker:
             http_port: 本地 HTTP 转发端口（ConnectivityMonitor 使用）
             check_mode: 检测模式 "http" / "tcp" / "auto"
             kernel_path: 内核可执行文件路径
+            check_retries: 单次检测失败后重试次数（提升有效性）
         """
         self.check_urls = check_urls or DEFAULT_CHECK_URLS
         self.timeout = timeout
@@ -84,6 +86,7 @@ class ProxyChecker:
         self.http_port = http_port if http_port > 0 else DEFAULT_HTTP_PORT
         self.check_mode = check_mode
         self.kernel_path = self._resolve_kernel_path(kernel_path)
+        self.check_retries = max(check_retries, 0)
 
     @staticmethod
     def _resolve_kernel_path(kernel_path: str) -> str:
@@ -103,27 +106,50 @@ class ProxyChecker:
         - auto: 优先内核转发，失败则回退 TCP/TLS
         - http: 仅通过内核转发检测
         - tcp: 仅直连 TCP/TLS 检测
+
+        支持重试：首次失败后重试 check_retries 次，取最快成功的延迟值
         """
         async with self.semaphore:
-            if self.check_mode == "tcp":
-                conn_info = self._parse_link(link)
-                if not conn_info:
-                    return None
+            best_latency = None
+
+            for attempt in range(1 + self.check_retries):
+                latency = await self._check_once(link)
+                if latency is not None:
+                    # 成功则取最快延迟
+                    if best_latency is None or latency < best_latency:
+                        best_latency = latency
+                    # 首次成功就不再重试
+                    if attempt == 0:
+                        break
+                    # 重试成功也直接返回（已有可用延迟）
+                    break
+                # 首次失败，短暂等待后重试
+                if attempt < self.check_retries:
+                    await asyncio.sleep(0.5)
+
+            return best_latency
+
+    async def _check_once(self, link: str) -> float | None:
+        """单次检测节点延迟（不含重试逻辑）"""
+        if self.check_mode == "tcp":
+            conn_info = self._parse_link(link)
+            if not conn_info:
+                return None
+            return await self._check_tcp_tls(conn_info)
+
+        # http / auto 模式：优先内核转发
+        if self.kernel_path:
+            latency = await self._check_via_kernel(link)
+            if latency is not None:
+                return latency
+
+        # auto 回退或 http 模式内核不可用时回退 TCP
+        if self.check_mode == "auto" or not self.kernel_path:
+            conn_info = self._parse_link(link)
+            if conn_info:
                 return await self._check_tcp_tls(conn_info)
 
-            # http / auto 模式：优先内核转发
-            if self.kernel_path:
-                latency = await self._check_via_kernel(link)
-                if latency is not None:
-                    return latency
-
-            # auto 回退或 http 模式内核不可用时回退 TCP
-            if self.check_mode == "auto" or not self.kernel_path:
-                conn_info = self._parse_link(link)
-                if conn_info:
-                    return await self._check_tcp_tls(conn_info)
-
-            return None
+        return None
 
     # ---- 内核转发检测 ----
 
@@ -200,26 +226,33 @@ class ProxyChecker:
                     pass
 
     async def _http_request_via_proxy(self, port: int) -> float | None:
-        """通过本地 HTTP 转发端口发送 HTTP 请求检测延迟"""
-        check_url = self.check_urls[0] if self.check_urls else DEFAULT_CHECK_URLS[0]
-        start = time.monotonic()
-        try:
-            connector = aiohttp.TCPConnector(limit=1, force_close=True)
-            proxy_url = f"http://127.0.0.1:{port}"
-            async with aiohttp.ClientSession(connector=connector) as session:
-                async with session.head(
-                    check_url,
-                    proxy=proxy_url,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout),
-                    allow_redirects=True,
-                    ssl=False,
-                ) as resp:
-                    elapsed = (time.monotonic() - start) * 1000
-                    if resp.status < 500:
-                        return round(elapsed, 1)
-                    return None
-        except Exception:
-            return None
+        """通过本地 HTTP 转发端口发送 HTTP 请求检测延迟
+
+        轮询多个检测 URL，任意一个返回 2xx 即判定可用；
+        仅 2xx 状态码视为真正可达，3xx/4xx/5xx 均判定失败
+        """
+        urls = self.check_urls if self.check_urls else DEFAULT_CHECK_URLS
+        proxy_url = f"http://127.0.0.1:{port}"
+
+        for check_url in urls:
+            start = time.monotonic()
+            try:
+                connector = aiohttp.TCPConnector(limit=1, force_close=True)
+                async with aiohttp.ClientSession(connector=connector) as session:
+                    async with session.head(
+                        check_url,
+                        proxy=proxy_url,
+                        timeout=aiohttp.ClientTimeout(total=self.timeout),
+                        allow_redirects=True,
+                        ssl=False,
+                    ) as resp:
+                        if 200 <= resp.status < 300:
+                            elapsed = (time.monotonic() - start) * 1000
+                            return round(elapsed, 1)
+                        # 非 2xx 继续尝试下一个 URL
+            except Exception:
+                continue
+        return None
 
     @staticmethod
     def _find_free_port() -> int:

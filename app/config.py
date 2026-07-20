@@ -27,6 +27,7 @@ class CheckConfig:
     socks_port: int = 1080  # 本地转发端口（ConnectivityMonitor 使用）
     http_port: int = 1081  # 本地 HTTP 转发端口
     kernel_path: str = "xray"  # 内核可执行文件路径
+    check_retries: int = 2  # 单次检测失败后重试次数
 
 
 @dataclass
@@ -83,6 +84,7 @@ def load_config(path: str = "config.yaml") -> AppConfig:
             "socks_port": 1080,
             "http_port": 1081,
             "kernel_path": "xray",
+            "check_retries": 2,
         },
         "scheduler": {
             "fetch_interval": 3600,

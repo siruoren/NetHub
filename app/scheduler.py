@@ -145,6 +145,7 @@ class TaskScheduler:
                 http_port=self.checker.http_port,
                 check_mode=self.checker.check_mode,
                 kernel_path=self.checker.kernel_path,
+                check_retries=self.config.check.check_retries,
             )
             links = [p.link for p in proxies]
             results = await sub_checker.check_batch(links)
@@ -308,6 +309,7 @@ class TaskScheduler:
             http_port=self.checker.http_port,
             check_mode=self.checker.check_mode,
             kernel_path=self.checker.kernel_path,
+            check_retries=self.config.check.check_retries,
         )
         links = [p.link for p in proxies]
         results = await sub_checker.check_batch(links)
@@ -429,6 +431,7 @@ class TaskScheduler:
                 http_port=self.checker.http_port,
                 check_mode=self.checker.check_mode,
                 kernel_path=self.checker.kernel_path,
+                check_retries=self.config.check.check_retries,
             )
             links = [p.link for p in proxies]
             results = await sub_checker.check_batch(links)
