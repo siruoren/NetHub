@@ -516,13 +516,25 @@ class ProxyDatabase:
         return grouped
 
     async def get_stats(self) -> dict:
-        """获取统计信息"""
-        cursor = await self._db.execute("SELECT COUNT(*) as total FROM proxies")
-        total = (await cursor.fetchone())["total"]
+        """获取统计信息
+
+        total: 所有订阅源+实例源的条目总数（total_count之和）
+        available: 数据库中检测通过的可用节点数
+        """
+        cursor = await self._db.execute(
+            "SELECT COALESCE(SUM(total_count), 0) as total FROM subscriptions"
+        )
+        sub_total = (await cursor.fetchone())["total"]
 
         cursor = await self._db.execute(
-            """SELECT COUNT(*) as available FROM proxies
-               WHERE latency_ms > 0 AND fail_count = 0"""
+            "SELECT COALESCE(SUM(total_count), 0) as total FROM instance_sources"
+        )
+        inst_total = (await cursor.fetchone())["total"]
+
+        total = sub_total + inst_total
+
+        cursor = await self._db.execute(
+            "SELECT COUNT(*) as available FROM proxies WHERE latency_ms > 0"
         )
         available = (await cursor.fetchone())["available"]
 
