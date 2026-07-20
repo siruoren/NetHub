@@ -135,6 +135,8 @@ async def manual_verify_subscription(sub_id: int):
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="订阅不存在")
     scheduler = get_scheduler()
+    if sub_id in scheduler._verifying_subs:
+        return {"message": f"订阅 #{sub_id} 正在验证中，请勿重复操作"}
     asyncio.create_task(scheduler.verify_subscription_proxies(sub_id))
     return {"message": f"已触发订阅 #{sub_id} 的节点验证"}
 

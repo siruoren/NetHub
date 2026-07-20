@@ -29,6 +29,7 @@ class TaskScheduler:
         self._last_verify_time = ""
         self._fetching = False
         self._verifying = False
+        self._verifying_subs: set[int] = set()  # 正在验证的订阅 ID 集合，防止并发
         self._last_instance_sub_urls: list[str] = []  # 最近一次实例源获取的订阅地址缓存
 
     def start(self) -> None:
@@ -285,49 +286,59 @@ class TaskScheduler:
 
     async def verify_subscription_proxies(self, sub_id: int) -> None:
         """验证指定订阅源的节点可用性（并发检测 + 批量数据库写入）"""
-        sub = await self.db.get_subscription_by_id(sub_id)
-        if not sub:
-            logger.warning("订阅 #%d 不存在", sub_id)
+        if sub_id in self._verifying_subs:
+            logger.info("订阅 #%d 正在验证中，跳过本次", sub_id)
             return
 
-        proxies = await self.db.get_proxies_by_source(sub.url)
-        if not proxies:
-            logger.info("订阅 #%d 没有节点，跳过验证", sub_id)
-            return
+        self._verifying_subs.add(sub_id)
+        try:
+            sub = await self.db.get_subscription_by_id(sub_id)
+            if not sub:
+                logger.warning("订阅 #%d 不存在", sub_id)
+                return
 
-        logger.info("开始验证订阅 #%d 的 %d 个节点...", sub_id, len(proxies))
+            proxies = await self.db.get_proxies_by_source(sub.url)
+            if not proxies:
+                logger.info("订阅 #%d 没有节点，跳过验证", sub_id)
+                return
 
-        sub_checker = ProxyChecker(
-            check_urls=self.checker.check_urls,
-            timeout=self.config.check.timeout,
-            max_concurrent=sub.max_concurrent,
-            socks_port=self.checker.socks_port,
-            http_port=self.checker.http_port,
-            check_mode=self.checker.check_mode,
-            kernel_path=self.checker.kernel_path,
-            check_retries=self.config.check.check_retries,
-        )
-        links = [p.link for p in proxies]
-        results = await sub_checker.check_batch(links)
+            logger.info("开始验证订阅 #%d 的 %d 个节点...", sub_id, len(proxies))
 
-        latency_updates = []
-        delete_ids = []
+            sub_checker = ProxyChecker(
+                check_urls=self.checker.check_urls,
+                timeout=self.config.check.timeout,
+                max_concurrent=sub.max_concurrent,
+                socks_port=self.checker.socks_port,
+                http_port=self.checker.http_port,
+                check_mode=self.checker.check_mode,
+                kernel_path=self.checker.kernel_path,
+                check_retries=self.config.check.check_retries,
+            )
+            links = [p.link for p in proxies]
+            results = await sub_checker.check_batch(links)
 
-        for proxy in proxies:
-            latency = results.get(proxy.link)
-            if latency is not None:
-                latency_updates.append((proxy.id, latency))
-            else:
-                # 检测失败直接删除
-                delete_ids.append(proxy.id)
+            latency_updates = []
+            delete_ids = []
 
-        if latency_updates:
-            await self.db.batch_update_latency(latency_updates)
-        if delete_ids:
-            await self.db.batch_delete_proxies(delete_ids)
+            for proxy in proxies:
+                latency = results.get(proxy.link)
+                if latency is not None:
+                    latency_updates.append((proxy.id, latency))
+                else:
+                    # 检测失败直接删除
+                    delete_ids.append(proxy.id)
 
-        self._last_verify_time = datetime.now(timezone(timedelta(hours=8))).isoformat()
-        logger.info("订阅 #%d 验证完成: 成功 %d, 删除 %d", sub_id, len(latency_updates), len(delete_ids))
+            if latency_updates:
+                await self.db.batch_update_latency(latency_updates)
+            if delete_ids:
+                await self.db.batch_delete_proxies(delete_ids)
+
+            self._last_verify_time = datetime.now(timezone(timedelta(hours=8))).isoformat()
+            logger.info("订阅 #%d 验证完成: 成功 %d, 删除 %d", sub_id, len(latency_updates), len(delete_ids))
+        except Exception as e:
+            logger.error("订阅 #%d 验证异常: %s", sub_id, e, exc_info=True)
+        finally:
+            self._verifying_subs.discard(sub_id)
 
     # ---- 服务实例源管理 ----
 
