@@ -474,7 +474,7 @@ class TaskScheduler:
             self._last_fetch_time = datetime.now(timezone(timedelta(hours=8))).isoformat()
             logger.info("实例源 #%d 获取完成: 入库 %d(新增%d), 检测成功 %d, 失败 %d, 总 %d",
                         source.id, added + existed, added,
-                        len(latency_updates), len(fail_ids), len(proxies))
+                        len(latency_updates), len(delete_ids), len(proxies))
         except Exception as e:
             await self.db.update_instance_fetch_status(source_id, "failed")
             logger.error("获取实例源 #%d 异常: %s", source.id, e, exc_info=True)
