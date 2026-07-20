@@ -16,10 +16,49 @@ logger = logging.getLogger(__name__)
 def generate_plain_subscription(proxies: list[ProxyDBRecord]) -> str:
     """生成纯文本格式订阅内容（参照 subdom.txt 格式）
 
-    每行一条原始代理 URI
+    每行一条原始代理 URI，socks/http 代理确保格式为 protocol://host:port#host-port
     """
-    links = [p.link for p in proxies]
+    links = [_normalize_link(p) for p in proxies]
     return "\n".join(links)
+
+
+def _normalize_link(proxy: ProxyDBRecord) -> str:
+    """规范化分享链接，确保 socks/http 代理带有 #host-port 名称"""
+    link = proxy.link
+    if link.startswith(("socks5://", "socks4://", "socks4a://")):
+        parsed = urlparse(link)
+        host = parsed.hostname or proxy.address
+        port = parsed.port or int(proxy.port) if proxy.port.isdigit() else 0
+        protocol = "socks5" if link.lower().startswith("socks5://") else "socks4"
+        if parsed.fragment:
+            name = unquote(parsed.fragment)
+        else:
+            name = f"{host}-{port}"
+        # 重建: socks4://host:port#name  (如有用户名密码也保留)
+        auth = ""
+        if parsed.username:
+            auth = unquote(parsed.username)
+            if parsed.password:
+                auth += f":{unquote(parsed.password)}"
+            auth += "@"
+        return f"{protocol}://{auth}{host}:{port}#{name}"
+    elif link.startswith(("http://", "https://")) and ("#" in link or proxy.protocol in ("http", "https")):
+        parsed = urlparse(link)
+        host = parsed.hostname or proxy.address
+        port = parsed.port or int(proxy.port) if proxy.port.isdigit() else 8080
+        protocol = "https" if link.lower().startswith("https://") else "http"
+        if parsed.fragment:
+            name = unquote(parsed.fragment)
+        else:
+            name = f"{host}-{port}"
+        auth = ""
+        if parsed.username:
+            auth = unquote(parsed.username)
+            if parsed.password:
+                auth += f":{unquote(parsed.password)}"
+            auth += "@"
+        return f"{protocol}://{auth}{host}:{port}#{name}"
+    return link
 
 
 def generate_v2ray_subscription(proxies: list[ProxyDBRecord]) -> str:
