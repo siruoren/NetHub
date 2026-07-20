@@ -146,7 +146,7 @@ class ProxyDatabase:
 
     async def insert_proxy(self, proxy: ProxyInfo, latency_ms: float, source: str) -> bool:
         """插入新节点，link 唯一约束，重复则忽略。返回是否插入成功"""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone(timedelta(hours=8))).isoformat()
         try:
             cursor = await self._db.execute(
                 """INSERT OR IGNORE INTO proxies
@@ -163,7 +163,7 @@ class ProxyDatabase:
 
     async def update_latency(self, proxy_id: int, latency_ms: float) -> None:
         """更新延迟并重置 fail_count"""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone(timedelta(hours=8))).isoformat()
         await self._db.execute(
             """UPDATE proxies
                SET latency_ms = ?, fail_count = 0,
@@ -181,7 +181,7 @@ class ProxyDatabase:
         """
         if not updates:
             return
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone(timedelta(hours=8))).isoformat()
         await self._db.executemany(
             """UPDATE proxies
                SET latency_ms = ?, fail_count = 0,
@@ -195,7 +195,7 @@ class ProxyDatabase:
         """批量 fail_count + 1，单次 commit"""
         if not proxy_ids:
             return
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone(timedelta(hours=8))).isoformat()
         await self._db.executemany(
             """UPDATE proxies
                SET fail_count = fail_count + 1, last_check_time = ?
@@ -206,7 +206,7 @@ class ProxyDatabase:
 
     async def increment_fail(self, proxy_id: int) -> int:
         """fail_count + 1，返回当前值"""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone(timedelta(hours=8))).isoformat()
         await self._db.execute(
             """UPDATE proxies
                SET fail_count = fail_count + 1, last_check_time = ?
@@ -263,7 +263,7 @@ class ProxyDatabase:
         条件：source 以 'instance:' 开头 且 fail_count > 0 且
         (last_success_time 为空 或 last_success_time 距今超过 days 天)
         """
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cutoff = (datetime.now(timezone(timedelta(hours=8))) - timedelta(days=days)).isoformat()
         cursor = await self._db.execute(
             """DELETE FROM proxies
                WHERE source LIKE 'instance:%'
@@ -349,7 +349,7 @@ class ProxyDatabase:
                                 max_retries: int = 3, max_concurrent: int = 50,
                                 enabled: bool = True) -> SubscriptionRecord | None:
         """添加订阅源"""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone(timedelta(hours=8))).isoformat()
         try:
             cursor = await self._db.execute(
                 """INSERT INTO subscriptions (url, crontab, latency_threshold, max_retries, max_concurrent, enabled, created_at)
@@ -605,7 +605,7 @@ class ProxyDatabase:
                                    max_concurrent: int = 50,
                                    enabled: bool = True) -> InstanceSourceRecord | None:
         """添加服务实例源"""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone(timedelta(hours=8))).isoformat()
         try:
             cursor = await self._db.execute(
                 """INSERT INTO instance_sources

@@ -297,6 +297,14 @@
             <i class="bi bi-trash3"></i> 清除所有节点
         </button>
         <span class="border-start mx-1"></span>
+        <button class="btn btn-outline-primary btn-sm" onclick="exportConfig()">
+            <i class="bi bi-download"></i> 导出配置
+        </button>
+        <button class="btn btn-outline-primary btn-sm" onclick="document.getElementById('importConfigFile').click()">
+            <i class="bi bi-upload"></i> 导入配置
+        </button>
+        <input type="file" id="importConfigFile" accept=".json" style="display:none" onchange="importConfig(this)">
+        <span class="border-start mx-1"></span>
         <button class="btn btn-outline-secondary btn-sm" onclick="refreshPage()">
             <i class="bi bi-bootstrap-reboot"></i> 刷新
         </button>
@@ -754,6 +762,35 @@ async function deleteAllProxies() {
             alert('清除失败');
         }
     } catch (e) { alert('请求失败: ' + e.message); }
+}
+
+function exportConfig() {
+    window.location.href = '/api/config/export';
+}
+
+async function importConfig(input) {
+    const file = input.files[0];
+    if (!file) return;
+    try {
+        const text = await file.text();
+        const config = JSON.parse(text);
+        const resp = await fetch('/api/config/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ config: config }),
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            alert(data.message);
+            location.reload();
+        } else {
+            alert('导入失败: ' + (data.detail || '未知错误'));
+        }
+    } catch (e) {
+        alert('导入失败: ' + e.message);
+    }
+    // 重置 file input 以便重复选择同一文件
+    input.value = '';
 }
 
 function refreshPage() { location.reload(); }

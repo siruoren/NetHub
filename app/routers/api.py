@@ -543,3 +543,120 @@ def _instance_source_to_dict(source) -> dict:
         "total_count": source.total_count,
         "fetch_status": source.fetch_status,
     }
+
+
+# ---- 配置导出/导入 ----
+
+@router.get("/config/export")
+async def export_config():
+    """导出订阅源和服务实例源配置为 JSON 文件"""
+    db = get_db()
+    subs = await db.get_all_subscriptions()
+    sources = await db.get_all_instance_sources()
+
+    config = {
+        "version": 1,
+        "subscriptions": [
+            {
+                "url": s.url,
+                "crontab": s.crontab,
+                "latency_threshold": s.latency_threshold,
+                "max_retries": s.max_retries,
+                "max_concurrent": s.max_concurrent,
+                "enabled": s.enabled,
+            }
+            for s in subs
+        ],
+        "instance_sources": [
+            {
+                "base_url": s.base_url,
+                "username": s.username,
+                "password": s.password,
+                "crontab": s.crontab,
+                "latency_threshold": s.latency_threshold,
+                "max_concurrent": s.max_concurrent,
+                "enabled": s.enabled,
+            }
+            for s in sources
+        ],
+    }
+
+    from fastapi.responses import Response
+    import json
+    content = json.dumps(config, ensure_ascii=False, indent=2)
+    return Response(
+        content=content,
+        media_type="application/json; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="nethub_config.json"',
+        },
+    )
+
+
+class ConfigImportRequest(BaseModel):
+    """配置导入请求体"""
+    config: dict
+
+
+@router.post("/config/import")
+async def import_config(req: ConfigImportRequest):
+    """从 JSON 导入订阅源和服务实例源配置（去重，不覆盖已有）"""
+    db = get_db()
+    scheduler = get_scheduler()
+
+    config = req.config
+    sub_added = 0
+    sub_dup = 0
+    inst_added = 0
+    inst_dup = 0
+
+    # 导入订阅源
+    for item in config.get("subscriptions", []):
+        url = item.get("url", "").strip()
+        if not url:
+            continue
+        existing = await db.get_subscription_by_url(url)
+        if existing:
+            sub_dup += 1
+            continue
+        sub = await db.add_subscription(
+            url=url,
+            crontab=item.get("crontab", "0 * * * *"),
+            latency_threshold=item.get("latency_threshold", 1500.0),
+            max_retries=item.get("max_retries", 3),
+            max_concurrent=item.get("max_concurrent", 50),
+            enabled=item.get("enabled", True),
+        )
+        if sub:
+            scheduler._add_subscription_job(sub)
+            sub_added += 1
+
+    # 导入服务实例源
+    for item in config.get("instance_sources", []):
+        base_url = item.get("base_url", "").strip()
+        if not base_url:
+            continue
+        existing = await db.get_instance_source_by_url(base_url)
+        if existing:
+            inst_dup += 1
+            continue
+        source = await db.add_instance_source(
+            base_url=base_url,
+            username=item.get("username", ""),
+            password=item.get("password", ""),
+            crontab=item.get("crontab", "*/10 * * * *"),
+            latency_threshold=item.get("latency_threshold", 1500.0),
+            max_concurrent=item.get("max_concurrent", 50),
+            enabled=item.get("enabled", True),
+        )
+        if source:
+            scheduler._add_instance_source_job(source)
+            inst_added += 1
+
+    return {
+        "message": f"导入完成: 订阅源新增 {sub_added} 个(跳过 {sub_dup} 个重复), 实例源新增 {inst_added} 个(跳过 {inst_dup} 个重复)",
+        "subscription_added": sub_added,
+        "subscription_duplicate": sub_dup,
+        "instance_added": inst_added,
+        "instance_duplicate": inst_dup,
+    }

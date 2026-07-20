@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -209,7 +209,7 @@ class TaskScheduler:
             await self.db.update_total_count(sub_id, len(proxies))
             await self.db.update_fetch_status(sub_id, "success")
 
-            self._last_fetch_time = datetime.now(timezone.utc).isoformat()
+            self._last_fetch_time = datetime.now(timezone(timedelta(hours=8))).isoformat()
             logger.info("订阅 #%d 拉取完成: 新增 %d, 更新 %d, 跳过 %d, 总解析 %d",
                         sub.id, added, updated, skipped, len(proxies))
         except Exception as e:
@@ -280,7 +280,7 @@ class TaskScheduler:
             if fail_ids:
                 await self.db.batch_increment_fail(fail_ids)
 
-            self._last_verify_time = datetime.now(timezone.utc).isoformat()
+            self._last_verify_time = datetime.now(timezone(timedelta(hours=8))).isoformat()
             logger.info("验证完成: 成功 %d, 失败 %d", len(latency_updates), len(fail_ids))
         except Exception as e:
             logger.error("验证任务异常: %s", e, exc_info=True)
@@ -329,7 +329,7 @@ class TaskScheduler:
         if fail_ids:
             await self.db.batch_increment_fail(fail_ids)
 
-        self._last_verify_time = datetime.now(timezone.utc).isoformat()
+        self._last_verify_time = datetime.now(timezone(timedelta(hours=8))).isoformat()
         logger.info("订阅 #%d 验证完成: 成功 %d, 失败 %d", sub_id, len(latency_updates), len(fail_ids))
 
     # ---- 服务实例源管理 ----
@@ -460,7 +460,7 @@ class TaskScheduler:
             await self.db.update_instance_total_count(source_id, len(proxies))
             await self.db.update_instance_fetch_status(source_id, "success")
 
-            self._last_fetch_time = datetime.now(timezone.utc).isoformat()
+            self._last_fetch_time = datetime.now(timezone(timedelta(hours=8))).isoformat()
             logger.info("实例源 #%d 获取完成: 入库 %d(新增%d), 检测成功 %d, 失败 %d, 总 %d",
                         source.id, added + existed, added,
                         len(latency_updates), len(fail_ids), len(proxies))
