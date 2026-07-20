@@ -39,7 +39,32 @@ DEFAULT_CHECK_URLS = [
     "https://www.gstatic.com/generate_204",
     "https://cp.cloudflare.com/",
     "https://www.apple.com/library/test/success.html",
+    "https://connectivitycheck.platform.hicloud.com/generate_204",
 ]
+
+# 检测 URL 预期响应验证规则
+CHECK_URL_VALIDATORS = {
+    "generate_204": lambda url, status, body: status == 204 or (status == 200 and len(body) == 0),
+    "cp.cloudflare.com": lambda url, status, body: status == 200 and len(body) > 0,
+    "success.html": lambda url, status, body: status == 200 and len(body) > 0,
+    "connectivitycheck": lambda url, status, body: status == 204 or status == 200,
+}
+
+
+def _validate_check_response(url: str, status: int, body: bytes) -> bool:
+    """验证检测响应是否为有效响应（排除劫持页面/认证门户）
+
+    默认规则：2xx 状态码即通过
+    特定 URL 有额外验证规则
+    """
+    if not (200 <= status < 300):
+        return False
+    # 逐条匹配验证规则
+    for keyword, validator in CHECK_URL_VALIDATORS.items():
+        if keyword in url:
+            return validator(url, status, body)
+    # 通用规则：2xx + 有响应体或 204
+    return status == 204 or len(body) > 0
 
 # 本地转发端口默认值
 DEFAULT_SOCKS_PORT = 1080
@@ -228,8 +253,8 @@ class ProxyChecker:
     async def _http_request_via_proxy(self, port: int) -> float | None:
         """通过本地 HTTP 转发端口发送 HTTP 请求检测延迟
 
-        轮询多个检测 URL，任意一个返回 2xx 即判定可用；
-        仅 2xx 状态码视为真正可达，3xx/4xx/5xx 均判定失败
+        轮询多个检测 URL，使用 GET 请求并验证响应内容；
+        确保节点能真正访问目标页面，排除劫持页面和认证门户
         """
         urls = self.check_urls if self.check_urls else DEFAULT_CHECK_URLS
         proxy_url = f"http://127.0.0.1:{port}"
@@ -239,17 +264,20 @@ class ProxyChecker:
             try:
                 connector = aiohttp.TCPConnector(limit=1, force_close=True)
                 async with aiohttp.ClientSession(connector=connector) as session:
-                    async with session.head(
+                    async with session.get(
                         check_url,
                         proxy=proxy_url,
                         timeout=aiohttp.ClientTimeout(total=self.timeout),
                         allow_redirects=True,
                         ssl=False,
                     ) as resp:
-                        if 200 <= resp.status < 300:
-                            elapsed = (time.monotonic() - start) * 1000
+                        # 读取响应体（限制最大 4KB 防止下载大文件）
+                        body = await resp.content.read(4096)
+                        elapsed = (time.monotonic() - start) * 1000
+
+                        if _validate_check_response(check_url, resp.status, body):
                             return round(elapsed, 1)
-                        # 非 2xx 继续尝试下一个 URL
+                        # 验证不通过，尝试下一个 URL
             except Exception:
                 continue
         return None
@@ -715,7 +743,12 @@ class ProxyChecker:
     # ---- TCP/TLS 直连检测（回退方案） ----
 
     async def _check_tcp_tls(self, info: ProxyConnInfo) -> float | None:
-        """直接 TCP/TLS 连接到节点服务器检测延迟（回退方案）"""
+        """直接 TCP/TLS 连接到节点服务器检测延迟（回退方案）
+
+        注意：此方法仅验证服务器端口可达和 TLS 握手成功，
+        不代表节点能真正转发流量到目标网站。
+        连接被拒绝视为不可用，不返回延迟值。
+        """
         host = info.host
         if not self._is_ip(host):
             resolved = await self._resolve_host(host)
@@ -730,14 +763,19 @@ class ProxyChecker:
                 ctx = ssl.create_default_context()
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
-                _, writer = await asyncio.wait_for(
+                reader, writer = await asyncio.wait_for(
                     asyncio.open_connection(
-                        host, info.port, ssl=ctx, server_hostname=host
+                        host, info.port, ssl=ctx, server_hostname=info.host
                     ),
                     timeout=self.timeout,
                 )
+                # 验证 TLS 握手完成：检查 SSL 对象状态
+                ssl_obj = writer.get_extra_info("ssl_object")
+                if ssl_obj is None:
+                    writer.close()
+                    return None
             else:
-                _, writer = await asyncio.wait_for(
+                reader, writer = await asyncio.wait_for(
                     asyncio.open_connection(host, info.port),
                     timeout=self.timeout,
                 )
@@ -750,8 +788,11 @@ class ProxyChecker:
                 pass
             return round(elapsed, 1)
         except ConnectionRefusedError:
-            elapsed = (time.monotonic() - start) * 1000
-            return round(elapsed, 1)
+            # 连接被拒绝 = 不可用，不返回延迟值
+            return None
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+            # 连接被重置/中断 = 不可用
+            return None
         except Exception:
             return None
 
