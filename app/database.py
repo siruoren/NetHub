@@ -204,6 +204,16 @@ class ProxyDatabase:
         )
         await self._db.commit()
 
+    async def batch_delete_proxies(self, proxy_ids: list[int]) -> None:
+        """批量删除节点（检测失败直接删除）"""
+        if not proxy_ids:
+            return
+        await self._db.executemany(
+            "DELETE FROM proxies WHERE id = ?",
+            [(pid,) for pid in proxy_ids],
+        )
+        await self._db.commit()
+
     async def increment_fail(self, proxy_id: int) -> int:
         """fail_count + 1，返回当前值"""
         now = datetime.now(timezone(timedelta(hours=8))).isoformat()
@@ -530,7 +540,6 @@ class ProxyDatabase:
         return {
             "total": total,
             "available": available,
-            "unavailable": total - available,
             "avg_latency_ms": round(avg_latency, 1),
             "protocol_distribution": protocol_dist,
         }

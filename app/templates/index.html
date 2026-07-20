@@ -5,7 +5,7 @@
 {% block content %}
 <!-- 统计卡片 -->
 <div class="row mb-4">
-    <div class="col-md-3">
+    <div class="col-md-4">
         <div class="card stat-card text-white bg-primary">
             <div class="card-body">
                 <h6 class="card-title"><i class="bi bi-collection"></i> 总节点数</h6>
@@ -13,7 +13,7 @@
             </div>
         </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-4">
         <div class="card stat-card text-white bg-success">
             <div class="card-body">
                 <h6 class="card-title"><i class="bi bi-check-circle"></i> 可用数</h6>
@@ -21,15 +21,7 @@
             </div>
         </div>
     </div>
-    <div class="col-md-3">
-        <div class="card stat-card text-white bg-danger">
-            <div class="card-body">
-                <h6 class="card-title"><i class="bi bi-x-circle"></i> 不可用</h6>
-                <h3 class="mb-0">{{ stats.unavailable }}</h3>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-3">
+    <div class="col-md-4">
         <div class="card stat-card text-white bg-info">
             <div class="card-body">
                 <h6 class="card-title"><i class="bi bi-speedometer2"></i> 平均延迟</h6>
@@ -615,8 +607,7 @@ setInterval(function() {
         var cards = document.querySelectorAll('.stat-card h3');
         if (cards[0]) cards[0].textContent = stats.total;
         if (cards[1]) cards[1].textContent = stats.available;
-        if (cards[2]) cards[2].textContent = stats.unavailable;
-        if (cards[3]) cards[3].textContent = Math.round(stats.avg_latency_ms) + ' ms';
+        if (cards[2]) cards[2].textContent = Math.round(stats.avg_latency_ms) + ' ms';
     }).catch(() => {});
 }, 30000);
 

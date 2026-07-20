@@ -155,7 +155,7 @@ class TaskScheduler:
             # 批量处理检测结果
             threshold = sub.latency_threshold
             latency_updates = []   # [(proxy_id, latency), ...]
-            fail_ids = []          # [proxy_id, ...]
+            delete_ids = []        # [proxy_id, ...]  检测失败/延迟超标需删除的已有节点
             added = 0
             updated = 0
             skipped = 0
@@ -164,14 +164,8 @@ class TaskScheduler:
                 latency = results.get(proxy.link)
 
                 if latency is None:
-                    # 检测失败
+                    # 检测失败 - 不入库，跳过
                     skipped += 1
-                    existing = await self.db.get_proxy_by_link(proxy.link)
-                    if existing:
-                        # 去重：若该节点原属于实例源，将 source 转移到订阅源
-                        if existing.source.startswith("instance:"):
-                            await self.db.update_proxy_source(existing.id, sub.url)
-                        fail_ids.append(existing.id)
                     continue
 
                 if latency <= threshold:
@@ -188,20 +182,19 @@ class TaskScheduler:
                         if success:
                             added += 1
                 else:
-                    # 延迟超标
+                    # 延迟超标 - 不入库，跳过
                     skipped += 1
                     existing = await self.db.get_proxy_by_link(proxy.link)
                     if existing:
-                        # 去重：若该节点原属于实例源，将 source 转移到订阅源
-                        if existing.source.startswith("instance:"):
-                            await self.db.update_proxy_source(existing.id, sub.url)
-                        fail_ids.append(existing.id)
+                        # 已入库的延迟超标节点直接删除
+                        delete_ids.append(existing.id)
 
             # 批量写入数据库
             if latency_updates:
                 await self.db.batch_update_latency(latency_updates)
-            if fail_ids:
-                await self.db.batch_increment_fail(fail_ids)
+            if delete_ids:
+                # 检测失败/延迟超标直接删除，不再保留
+                await self.db.batch_delete_proxies(delete_ids)
 
             # 有节点入库则重置空天数
             if added > 0:
@@ -267,23 +260,24 @@ class TaskScheduler:
             results = await self.checker.check_batch(links)
 
             latency_updates = []
-            fail_ids = []
+            delete_ids = []
 
             for proxy in proxies:
                 latency = results.get(proxy.link)
                 if latency is not None:
                     latency_updates.append((proxy.id, latency))
                 else:
-                    fail_ids.append(proxy.id)
+                    # 检测失败直接删除
+                    delete_ids.append(proxy.id)
 
             # 批量写入
             if latency_updates:
                 await self.db.batch_update_latency(latency_updates)
-            if fail_ids:
-                await self.db.batch_increment_fail(fail_ids)
+            if delete_ids:
+                await self.db.batch_delete_proxies(delete_ids)
 
             self._last_verify_time = datetime.now(timezone(timedelta(hours=8))).isoformat()
-            logger.info("验证完成: 成功 %d, 失败 %d", len(latency_updates), len(fail_ids))
+            logger.info("验证完成: 成功 %d, 删除 %d", len(latency_updates), len(delete_ids))
         except Exception as e:
             logger.error("验证任务异常: %s", e, exc_info=True)
         finally:
@@ -317,22 +311,23 @@ class TaskScheduler:
         results = await sub_checker.check_batch(links)
 
         latency_updates = []
-        fail_ids = []
+        delete_ids = []
 
         for proxy in proxies:
             latency = results.get(proxy.link)
             if latency is not None:
                 latency_updates.append((proxy.id, latency))
             else:
-                fail_ids.append(proxy.id)
+                # 检测失败直接删除
+                delete_ids.append(proxy.id)
 
         if latency_updates:
             await self.db.batch_update_latency(latency_updates)
-        if fail_ids:
-            await self.db.batch_increment_fail(fail_ids)
+        if delete_ids:
+            await self.db.batch_delete_proxies(delete_ids)
 
         self._last_verify_time = datetime.now(timezone(timedelta(hours=8))).isoformat()
-        logger.info("订阅 #%d 验证完成: 成功 %d, 失败 %d", sub_id, len(latency_updates), len(fail_ids))
+        logger.info("订阅 #%d 验证完成: 成功 %d, 删除 %d", sub_id, len(latency_updates), len(delete_ids))
 
     # ---- 服务实例源管理 ----
 
@@ -441,7 +436,7 @@ class TaskScheduler:
 
             # 批量处理检测结果
             latency_updates = []   # [(proxy_id, latency), ...]
-            fail_ids = []          # [proxy_id, ...]
+            delete_ids = []        # [proxy_id, ...]  检测失败直接删除
 
             for proxy in proxies:
                 latency = results.get(proxy.link)
@@ -452,13 +447,15 @@ class TaskScheduler:
                 if latency is not None and latency > 0:
                     latency_updates.append((db_record.id, latency))
                 else:
-                    fail_ids.append(db_record.id)
+                    # 检测失败直接删除
+                    delete_ids.append(db_record.id)
 
             # 批量写入数据库
             if latency_updates:
                 await self.db.batch_update_latency(latency_updates)
-            if fail_ids:
-                await self.db.batch_increment_fail(fail_ids)
+            if delete_ids:
+                # 检测失败直接删除，不再保留
+                await self.db.batch_delete_proxies(delete_ids)
 
             await self.db.update_instance_total_count(source_id, len(proxies))
             await self.db.update_instance_fetch_status(source_id, "success")
@@ -521,21 +518,11 @@ class TaskScheduler:
         return new_sub_count
 
     async def cleanup_proxies(self) -> None:
-        """清理不合格节点和空订阅源
+        """清理空订阅源
 
-        - 订阅源节点：连续 3 次验证失败则移除（原逻辑不变）
-        - 实例源节点：last_success_time 为空或距今超过 7 天且 fail_count > 0 才移除
+        检测失败的节点已在验证时直接删除，无需按 fail_count 清理。
+        仅清理连续7天节点数为0的订阅源。
         """
-        # 清理订阅源节点：连续3次验证失败
-        deleted = await self.db.delete_sub_proxies_by_fail_count(3)
-        if deleted > 0:
-            logger.info("清理订阅源节点: 删除 %d 个连续3次不可用的节点", deleted)
-
-        # 清理实例源节点：连续7天无成功
-        deleted_inst = await self.db.delete_instance_proxies_stale(7)
-        if deleted_inst > 0:
-            logger.info("清理实例源节点: 删除 %d 个连续7天无成功的节点", deleted_inst)
-
         # 清理连续7天节点数为0的订阅源
         empty_subs = await self.db.get_subscriptions_with_empty_days(7)
         for sub in empty_subs:
