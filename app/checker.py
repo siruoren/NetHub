@@ -39,7 +39,32 @@ DEFAULT_CHECK_URLS = [
     "https://www.gstatic.com/generate_204",
     "https://cp.cloudflare.com/",
     "https://www.apple.com/library/test/success.html",
+    "https://connectivitycheck.platform.hicloud.com/generate_204",
 ]
+
+# 检测 URL 预期响应验证规则
+CHECK_URL_VALIDATORS = {
+    "generate_204": lambda url, status, body: status == 204 or (status == 200 and len(body) == 0),
+    "cp.cloudflare.com": lambda url, status, body: status == 200 and len(body) > 0,
+    "success.html": lambda url, status, body: status == 200 and len(body) > 0,
+    "connectivitycheck": lambda url, status, body: status == 204 or status == 200,
+}
+
+
+def _validate_check_response(url: str, status: int, body: bytes) -> bool:
+    """验证检测响应是否为有效响应（排除劫持页面/认证门户）
+
+    默认规则：2xx 状态码即通过
+    特定 URL 有额外验证规则
+    """
+    if not (200 <= status < 300):
+        return False
+    # 逐条匹配验证规则
+    for keyword, validator in CHECK_URL_VALIDATORS.items():
+        if keyword in url:
+            return validator(url, status, body)
+    # 通用规则：2xx + 有响应体或 204
+    return status == 204 or len(body) > 0
 
 # 本地转发端口默认值
 DEFAULT_SOCKS_PORT = 1080
@@ -66,7 +91,8 @@ class ProxyChecker:
 
     def __init__(self, check_urls: list[str], timeout: float, max_concurrent: int,
                  socks_port: int = 0, http_port: int = 0,
-                 check_mode: str = "auto", kernel_path: str = "xray"):
+                 check_mode: str = "auto", kernel_path: str = "xray",
+                 check_retries: int = 2):
         """
         Args:
             check_urls: HTTP 检测目标 URL 列表
@@ -76,6 +102,7 @@ class ProxyChecker:
             http_port: 本地 HTTP 转发端口（ConnectivityMonitor 使用）
             check_mode: 检测模式 "http" / "tcp" / "auto"
             kernel_path: 内核可执行文件路径
+            check_retries: 单次检测失败后重试次数（提升有效性）
         """
         self.check_urls = check_urls or DEFAULT_CHECK_URLS
         self.timeout = timeout
@@ -84,6 +111,7 @@ class ProxyChecker:
         self.http_port = http_port if http_port > 0 else DEFAULT_HTTP_PORT
         self.check_mode = check_mode
         self.kernel_path = self._resolve_kernel_path(kernel_path)
+        self.check_retries = max(check_retries, 0)
 
     @staticmethod
     def _resolve_kernel_path(kernel_path: str) -> str:
@@ -103,27 +131,50 @@ class ProxyChecker:
         - auto: 优先内核转发，失败则回退 TCP/TLS
         - http: 仅通过内核转发检测
         - tcp: 仅直连 TCP/TLS 检测
+
+        支持重试：首次失败后重试 check_retries 次，取最快成功的延迟值
         """
         async with self.semaphore:
-            if self.check_mode == "tcp":
-                conn_info = self._parse_link(link)
-                if not conn_info:
-                    return None
+            best_latency = None
+
+            for attempt in range(1 + self.check_retries):
+                latency = await self._check_once(link)
+                if latency is not None:
+                    # 成功则取最快延迟
+                    if best_latency is None or latency < best_latency:
+                        best_latency = latency
+                    # 首次成功就不再重试
+                    if attempt == 0:
+                        break
+                    # 重试成功也直接返回（已有可用延迟）
+                    break
+                # 首次失败，短暂等待后重试
+                if attempt < self.check_retries:
+                    await asyncio.sleep(0.5)
+
+            return best_latency
+
+    async def _check_once(self, link: str) -> float | None:
+        """单次检测节点延迟（不含重试逻辑）"""
+        if self.check_mode == "tcp":
+            conn_info = self._parse_link(link)
+            if not conn_info:
+                return None
+            return await self._check_tcp_tls(conn_info)
+
+        # http / auto 模式：优先内核转发
+        if self.kernel_path:
+            latency = await self._check_via_kernel(link)
+            if latency is not None:
+                return latency
+
+        # auto 回退或 http 模式内核不可用时回退 TCP
+        if self.check_mode == "auto" or not self.kernel_path:
+            conn_info = self._parse_link(link)
+            if conn_info:
                 return await self._check_tcp_tls(conn_info)
 
-            # http / auto 模式：优先内核转发
-            if self.kernel_path:
-                latency = await self._check_via_kernel(link)
-                if latency is not None:
-                    return latency
-
-            # auto 回退或 http 模式内核不可用时回退 TCP
-            if self.check_mode == "auto" or not self.kernel_path:
-                conn_info = self._parse_link(link)
-                if conn_info:
-                    return await self._check_tcp_tls(conn_info)
-
-            return None
+        return None
 
     # ---- 内核转发检测 ----
 
@@ -200,26 +251,36 @@ class ProxyChecker:
                     pass
 
     async def _http_request_via_proxy(self, port: int) -> float | None:
-        """通过本地 HTTP 转发端口发送 HTTP 请求检测延迟"""
-        check_url = self.check_urls[0] if self.check_urls else DEFAULT_CHECK_URLS[0]
-        start = time.monotonic()
-        try:
-            connector = aiohttp.TCPConnector(limit=1, force_close=True)
-            proxy_url = f"http://127.0.0.1:{port}"
-            async with aiohttp.ClientSession(connector=connector) as session:
-                async with session.head(
-                    check_url,
-                    proxy=proxy_url,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout),
-                    allow_redirects=True,
-                    ssl=False,
-                ) as resp:
-                    elapsed = (time.monotonic() - start) * 1000
-                    if resp.status < 500:
-                        return round(elapsed, 1)
-                    return None
-        except Exception:
-            return None
+        """通过本地 HTTP 转发端口发送 HTTP 请求检测延迟
+
+        轮询多个检测 URL，使用 GET 请求并验证响应内容；
+        确保节点能真正访问目标页面，排除劫持页面和认证门户
+        """
+        urls = self.check_urls if self.check_urls else DEFAULT_CHECK_URLS
+        proxy_url = f"http://127.0.0.1:{port}"
+
+        for check_url in urls:
+            start = time.monotonic()
+            try:
+                connector = aiohttp.TCPConnector(limit=1, force_close=True)
+                async with aiohttp.ClientSession(connector=connector) as session:
+                    async with session.get(
+                        check_url,
+                        proxy=proxy_url,
+                        timeout=aiohttp.ClientTimeout(total=self.timeout),
+                        allow_redirects=True,
+                        ssl=False,
+                    ) as resp:
+                        # 读取响应体（限制最大 4KB 防止下载大文件）
+                        body = await resp.content.read(4096)
+                        elapsed = (time.monotonic() - start) * 1000
+
+                        if _validate_check_response(check_url, resp.status, body):
+                            return round(elapsed, 1)
+                        # 验证不通过，尝试下一个 URL
+            except Exception:
+                continue
+        return None
 
     @staticmethod
     def _find_free_port() -> int:
@@ -265,7 +326,7 @@ class ProxyChecker:
                 return ProxyChecker._ss_to_xray(link)
             elif link.startswith("hysteria2://") or link.startswith("hy2://"):
                 return ProxyChecker._hysteria2_to_xray(link)
-            elif link.startswith(("socks5://", "socks4://", "socks4a://")):
+            elif link.startswith("socks5://"):
                 return ProxyChecker._socks_to_xray(link)
             elif link.startswith(("http://", "https://")) and "#" in link:
                 return ProxyChecker._http_to_xray(link)
@@ -635,7 +696,7 @@ class ProxyChecker:
 
     @staticmethod
     def _socks_to_xray(link: str) -> dict | None:
-        """socks5:// / socks4:// / socks4a:// 分享链接转内核 outbound"""
+        """socks5:// 分享链接转内核 outbound"""
         try:
             parsed = urlparse(link)
             address = parsed.hostname or ""
@@ -682,7 +743,12 @@ class ProxyChecker:
     # ---- TCP/TLS 直连检测（回退方案） ----
 
     async def _check_tcp_tls(self, info: ProxyConnInfo) -> float | None:
-        """直接 TCP/TLS 连接到节点服务器检测延迟（回退方案）"""
+        """直接 TCP/TLS 连接到节点服务器检测延迟（回退方案）
+
+        注意：此方法仅验证服务器端口可达和 TLS 握手成功，
+        不代表节点能真正转发流量到目标网站。
+        连接被拒绝视为不可用，不返回延迟值。
+        """
         host = info.host
         if not self._is_ip(host):
             resolved = await self._resolve_host(host)
@@ -697,14 +763,19 @@ class ProxyChecker:
                 ctx = ssl.create_default_context()
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
-                _, writer = await asyncio.wait_for(
+                reader, writer = await asyncio.wait_for(
                     asyncio.open_connection(
-                        host, info.port, ssl=ctx, server_hostname=host
+                        host, info.port, ssl=ctx, server_hostname=info.host
                     ),
                     timeout=self.timeout,
                 )
+                # 验证 TLS 握手完成：检查 SSL 对象状态
+                ssl_obj = writer.get_extra_info("ssl_object")
+                if ssl_obj is None:
+                    writer.close()
+                    return None
             else:
-                _, writer = await asyncio.wait_for(
+                reader, writer = await asyncio.wait_for(
                     asyncio.open_connection(host, info.port),
                     timeout=self.timeout,
                 )
@@ -717,8 +788,11 @@ class ProxyChecker:
                 pass
             return round(elapsed, 1)
         except ConnectionRefusedError:
-            elapsed = (time.monotonic() - start) * 1000
-            return round(elapsed, 1)
+            # 连接被拒绝 = 不可用，不返回延迟值
+            return None
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+            # 连接被重置/中断 = 不可用
+            return None
         except Exception:
             return None
 
@@ -784,7 +858,7 @@ class ProxyChecker:
                 return self._parse_ss(link)
             elif link.startswith("hysteria2://") or link.startswith("hy2://"):
                 return self._parse_hysteria2(link)
-            elif link.startswith(("socks5://", "socks4://", "socks4a://")):
+            elif link.startswith("socks5://"):
                 return self._parse_socks(link)
             elif link.startswith(("http://", "https://")) and "#" in link:
                 return self._parse_http_proxy(link)
@@ -903,15 +977,17 @@ class ProxyChecker:
 
     def _parse_socks(self, link: str) -> ProxyConnInfo | None:
         try:
+            # socks4/socks4a 不再支持
+            if link.lower().startswith(("socks4://", "socks4a://")):
+                return None
             parsed = urlparse(link)
             address = parsed.hostname or ""
             port = parsed.port or 0
             if not address or not port:
                 return None
-            protocol = "socks5" if link.lower().startswith("socks5://") else "socks4"
             return ProxyConnInfo(
                 host=address, port=int(port),
-                use_tls=False, protocol=protocol,
+                use_tls=False, protocol="socks5",
             )
         except Exception:
             return None

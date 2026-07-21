@@ -2,6 +2,99 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.0] - 2026-07-20
+
+### 核心重构
+
+- **节点-订阅关联重构** - 代理节点使用 `subscription_id`（整数）替代 `source`（字符串）绑定所属订阅源，已存在于其他订阅的节点不重复入库
+- **纯文本订阅格式** - 对外订阅输出改为纯文本格式（每行一条原始代理 URI），参照 `subdom.txt` 样式；移除 base64 编码输出
+- **内核转发检测** - 新增 Xray 内核转发检测能力，支持 HTTP/SOCKS 代理转发后检测连通性；TCP/TLS 直接检测作为回退
+- **检测失败直接删除** - 取消 `fail_count` 累积逻辑，检测不通过的节点直接从数据库删除，不再保留
+- **实例源节点不入库** - 服务实例获取的节点仅统计已连接数量，不再写入代理数据库
+- **socks4 协议移除** - 不再支持 socks4/socks4a 协议，拉取订阅时自动移除已有的 socks4 节点
+
+### 多协议解析扩展
+
+- **socks5/http 代理支持** - 新增 socks5:// 和 http(s):// 格式的解析、检测和 Clash 配置生成
+- **http/https 仅带 #fragment 时视为节点** - 避免 URL 误判为代理节点
+- **链接规范化** - socks5/http 代理对外输出确保格式为 `protocol://host:port#host-port`，保留认证信息
+
+### 检测优化
+
+- **多目标 URL 轮询** - 新增 5 个检测目标（Google 204、Gstatic 204、Cloudflare、Apple、华为连通性检测）
+- **响应体验证** - 新增 `_validate_check_response` 排除劫持页面和空响应
+- **GET + 4KB body 读取** - 替代 HEAD 请求，提升服务器兼容性
+- **检测重试机制** - `check_retries` 参数（默认 2），单次检测失败后自动重试
+- **ConnectionRefusedError/ResetError** - 不再返回延迟值（视为不可用）
+- **TLS 回退检测** - SSL 对象状态验证，`server_hostname` 使用原始域名
+- **华为连通性检测** - 新增 `connectivitycheck.platform.hicloud.com/generate_204`
+
+### 调度优化
+
+- **CronTrigger 随机延迟** - 所有 crontab 任务加入 `jitter`（0~600 秒），避免多订阅源同时更新
+- **订阅验证防重入** - `_verifying_subs` 集合跟踪正在验证的订阅 ID，防止并发重复验证
+- **拉取后自动验证** - `_fetch_single_subscription` 完成后自动触发该订阅的已入库节点验证
+
+### 时间与日志
+
+- **UTC+8 统一** - 所有服务时间统一为东八区（UTC+8），包括数据库时间戳和日志时间
+- **单文件日志** - 日志写入 `logs/proxy_pool.log` 单文件，不归档、不保留历史日志
+- **内核日志合并** - 内核 stdout/stderr 合并写入 `logs/proxy-core.log`
+
+### Web 界面
+
+- **统计面板重构** - "总节点数"→"总订阅条目数"（显示订阅源数量），"可用数"→"可用节点数"，移除"不可用"统计卡片
+- **分页显示** - 每个订阅源可用节点列表分页，每页 10 条
+- **操作按钮更新** - "验证所有订阅"→"验证所有节点"，新增"清除所有节点"、"导出配置"、"导入配置"按钮
+- **实例源表头** - "总数"→"已连接"，显示已连接节点数量而非数据库条目数
+
+### 配置管理
+
+- **一键导出/导入** - 导出订阅源和实例源配置为 JSON 文件（含时间戳），导入时自动去重
+- **导出文件名时间戳** - 格式 `nethub_config_YYYYMMDD_HHMMSS.json`
+
+### API 接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/proxies` | 可用节点列表 |
+| GET | `/api/proxies/all` | 所有节点 |
+| GET | `/api/proxies/grouped` | 按 subscription_id 分组的可用节点 |
+| DELETE | `/api/proxies/{id}` | 删除节点 |
+| DELETE | `/api/proxies` | 一键清除所有节点 |
+| GET | `/api/subscription/plain` | 纯文本格式订阅 |
+| GET | `/api/subscription/v2ray` | 纯文本格式订阅（同 plain） |
+| GET | `/api/subscription/clash` | Clash 格式订阅（YAML） |
+| POST | `/api/fetch` | 拉取所有订阅 |
+| POST | `/api/fetch/{sub_id}` | 拉取指定订阅 |
+| POST | `/api/verify` | 验证所有节点 |
+| POST | `/api/verify/{sub_id}` | 验证指定订阅节点 |
+| GET | `/api/stats` | 统计信息 |
+| GET | `/api/health` | 健康检查 |
+| GET | `/api/subscriptions` | 订阅源列表 |
+| POST | `/api/subscriptions` | 添加订阅源 |
+| POST | `/api/subscriptions/auto` | 自动添加订阅源（仅 URL 必填） |
+| PUT | `/api/subscriptions/{sub_id}` | 更新订阅源 |
+| DELETE | `/api/subscriptions/{sub_id}` | 删除订阅源及其下所有节点 |
+| GET | `/api/check-urls` | 检测目标 URL 列表 |
+| POST | `/api/check-urls` | 添加检测目标 URL |
+| DELETE | `/api/check-urls/{url_id}` | 删除检测目标 URL |
+| GET | `/api/config/export` | 导出配置（JSON） |
+| POST | `/api/config/import` | 导入配置（JSON） |
+| GET | `/api/instance-sources` | 服务实例源列表 |
+| POST | `/api/instance-sources` | 添加服务实例源 |
+| PUT | `/api/instance-sources/{source_id}` | 更新服务实例源 |
+| DELETE | `/api/instance-sources/{source_id}` | 删除服务实例源 |
+| POST | `/api/instance-sources/{source_id}/fetch` | 获取实例源已连接节点数 |
+| POST | `/api/instance-sources/{source_id}/import` | 导入实例源订阅 |
+
+### Docker 构建
+
+- **固定版本下载** - 内核数据文件使用固定版本标签，替代 `latest` 避免超时
+- **curl 重试参数** - `--connect-timeout 30 --max-time 180 --retry 3 --retry-delay 5`
+
+---
+
 ## [1.0.0] - 2026-07-18
 
 ### 核心功能
@@ -47,7 +140,7 @@ All notable changes to this project will be documented in this file.
 | GET | `/api/proxies` | 可用节点列表 |
 | GET | `/api/proxies/all` | 所有节点 |
 | DELETE | `/api/proxies/{id}` | 删除节点 |
-| GET | `/api/subscription/v2ray` | 核心订阅 |
+| GET | `/api/subscription/v2ray` | 核心订阅（base64） |
 | GET | `/api/subscription/clash` | Clash 订阅 |
 | POST | `/api/fetch` | 拉取所有订阅 |
 | POST | `/api/fetch/{sub_id}` | 拉取指定订阅 |
