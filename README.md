@@ -4,16 +4,17 @@
 
 ## 功能特性
 
-- **订阅源管理** - 数据库驱动的增删改查，每个订阅源独立配置 Crontab、延迟阈值、重试次数、并发数
-- **Crontab 定时拉取** - 每个订阅源支持 5 位 Crontab 表达式精准调度
-- **HTTP 延迟检测** - 模拟通过节点访问目标网站，测量完整请求延迟（DNS + TCP + TLS + HTTP），多目标取最大值
-- **检测目标动态配置** - 检测目标 URL 存入数据库，页面可增删，修改即时生效，无需外部文件
-- **多协议支持** - vmess / vless / trojan / ss / hysteria2 解析与 Clash 配置生成
-- **自动清理** - 连续 3 次验证失败的节点自动移除；连续 30 天无节点的订阅源自动删除
-- **单页面管理** - 订阅源管理 + 可用节点列表在同一页面，按订阅源 Tab 切换
-- **协议分布图** - 饼状图动态展示各协议节点数量和百分比
-- **订阅输出** - 仅输出当前可用节点，支持核心格式（base64）和 Clash（YAML）格式
-- **日志归档** - 按天自动归档，自动清理 7 天前的日志
+- **订阅源管理** - 数据库驱动的增删改查，每个订阅源独立配置 Crontab、延迟阈值、并发数；删除订阅源时自动清除其下所有节点
+- **Crontab 定时拉取** - 每个订阅源支持 5 位 Crontab 表达式，内置随机延迟（0~10 分钟）避免多源同时更新
+- **内核转发检测** - Xray 内核转发后检测连通性，TCP/TLS 直接检测作为回退；多目标 URL 轮询 + 响应体验证 + 检测重试
+- **检测失败直接删除** - 取消失败计数累积，检测不通过的节点直接从数据库删除
+- **节点-订阅绑定** - 每个节点绑定所属 `subscription_id`，已存在于其他订阅的节点不重复入库
+- **纯文本订阅输出** - 每行一条原始代理 URI，参照 `subdom.txt` 格式；同时提供 Clash（YAML）格式
+- **多协议支持** - vmess / vless / trojan / ss / hysteria2 / socks5 / http(s) 解析、检测与 Clash 配置生成
+- **服务实例源** - 获取已连接节点数量统计（不入库），支持手工导入实例源中的订阅地址
+- **配置导出/导入** - 一键导出订阅源和实例源配置为 JSON 文件（含时间戳），导入时自动去重
+- **UTC+8 时区统一** - 所有服务时间统一为东八区
+- **单文件日志** - 不归档、不保留历史日志
 - **Docker 部署** - Docker Compose 一键启动
 
 ## 快速开始
@@ -31,7 +32,7 @@ vim config.yaml
 docker-compose up -d
 ```
 
-访问 http://localhost:8080 查看 Web 界面。
+访问 http://localhost:2020 查看 Web 界面。
 
 ### 本地运行
 
@@ -60,15 +61,19 @@ check:
   timeout: 5.0                   # 检测超时（秒）
   max_concurrent: 50             # 全局并发检测数
   latency_threshold: 1500.0      # 全局延迟阈值（毫秒）
+  check_mode: "auto"             # 检测模式: auto(优先内核转发回退TCP) / http(仅内核转发) / tcp(仅TCP/TLS)
+  socks_port: 1080               # 本地 SOCKS 转发端口
+  http_port: 1081                # 本地 HTTP 转发端口
+  kernel_path: "xray"            # 内核可执行文件路径
+  check_retries: 2               # 单次检测失败后重试次数
 
 scheduler:
   fetch_interval: 3600           # 拉取订阅间隔（秒）
   verify_interval: 1800          # 验证节点间隔（秒）
   cleanup_interval: 7200         # 清理间隔（秒）
-  max_fail_count: 3              # 最大连续失败次数
 ```
 
-> 检测目标 URL 默认为 `https://www.google.com/generate_204` 和 `https://www.gstatic.com/generate_204`，首次启动自动写入数据库，后续在页面「检测目标」中管理，修改即时生效。
+> 检测目标 URL 默认包含 Google 204、Gstatic 204、Cloudflare、Apple、华为连通性检测等，首次启动自动写入数据库，后续在页面「检测目标」中管理，修改即时生效。
 
 ### 环境变量
 
@@ -85,15 +90,17 @@ scheduler:
 |------|------|------|
 | GET | `/api/proxies` | 可用节点列表 |
 | GET | `/api/proxies/all` | 所有节点 |
-| GET | `/api/proxies/grouped` | 按订阅来源分组的可用节点 |
+| GET | `/api/proxies/grouped` | 按 subscription_id 分组的可用节点 |
 | DELETE | `/api/proxies/{id}` | 删除节点 |
+| DELETE | `/api/proxies` | 一键清除所有节点 |
 
 ### 订阅输出
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/subscription/v2ray` | 核心格式订阅（base64） |
-| GET | `/api/subscription/clash` | Clash 格式订阅（YAML） |
+| GET | `/api/subscription/plain` | 纯文本格式（每行一条 URI） |
+| GET | `/api/subscription/v2ray` | 纯文本格式（同 plain） |
+| GET | `/api/subscription/clash` | Clash 格式（YAML） |
 
 ### 订阅源管理
 
@@ -103,7 +110,7 @@ scheduler:
 | POST | `/api/subscriptions` | 添加订阅源 |
 | POST | `/api/subscriptions/auto` | 自动添加（仅 URL 必填，自动拉取验证） |
 | PUT | `/api/subscriptions/{sub_id}` | 更新订阅源 |
-| DELETE | `/api/subscriptions/{sub_id}` | 删除订阅源 |
+| DELETE | `/api/subscriptions/{sub_id}` | 删除订阅源及其下所有节点 |
 
 ### 拉取与验证
 
@@ -114,10 +121,28 @@ scheduler:
 | POST | `/api/verify` | 验证所有节点 |
 | POST | `/api/verify/{sub_id}` | 验证指定订阅节点 |
 
-### 检测目标
+### 服务实例源
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
+| GET | `/api/instance-sources` | 服务实例源列表 |
+| POST | `/api/instance-sources` | 添加服务实例源 |
+| PUT | `/api/instance-sources/{source_id}` | 更新服务实例源 |
+| DELETE | `/api/instance-sources/{source_id}` | 删除服务实例源 |
+| POST | `/api/instance-sources/{source_id}/fetch` | 获取实例源已连接节点数 |
+| POST | `/api/instance-sources/{source_id}/import` | 导入实例源订阅 |
+
+### 配置管理
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/config/export` | 导出配置（JSON） |
+| POST | `/api/config/import` | 导入配置（JSON，自动去重） |
+
+### 检测目标
+
+| 方法 | 路径 | 说明 |
+|------|------|--------|
 | GET | `/api/check-urls` | 检测目标 URL 列表 |
 | POST | `/api/check-urls` | 添加检测目标 URL |
 | DELETE | `/api/check-urls/{url_id}` | 删除检测目标 URL |
@@ -125,16 +150,16 @@ scheduler:
 ### 其他
 
 | 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/stats` | 统计信息 |
+|------|------|--------|
+| GET | `/api/stats` | 统计信息（总订阅条目数、可用节点数、平均延迟） |
 | GET | `/api/health` | 健康检查 |
 
 ## 订阅链接使用
 
 在节点客户端中添加以下订阅链接：
 
-- **核心**: `http://your-server:8080/api/subscription/v2ray`
-- **Clash**: `http://your-server:8080/api/subscription/clash`
+- **纯文本**: `http://your-server:2020/api/subscription/plain`
+- **Clash**: `http://your-server:2020/api/subscription/clash`
 
 > 订阅内容仅包含延迟低于阈值的可用节点，随节点池自动更新。
 
@@ -147,22 +172,28 @@ scheduler:
 | Trojan | ✅ | ✅ |
 | Shadowsocks | ✅ | ✅ |
 | Hysteria2 | ✅ | ✅ |
+| SOCKS5 | ✅ | ✅ |
+| HTTP/HTTPS | ✅ | ✅ |
+
+> socks4/socks4a 协议不再支持，拉取时自动移除。
 
 ## 延迟检测原理
 
-延迟检测模拟真实上网场景：通过转发服务访问目标检测 URL，测量完整请求延迟。
+延迟检测模拟真实上网场景：通过 Xray 内核转发访问目标检测 URL，测量完整请求延迟。
 
 ```
-客户端 → 转发服务 → 目标网站
+客户端 → Xray 内核转发 → 目标网站
          ├── DNS 解析
          ├── TCP 连接建立
          ├── TLS 握手（HTTPS 目标）
          └── HTTP 请求/响应
 ```
 
-- 检测目标默认为 `https://www.google.com/generate_204` 和 `https://www.gstatic.com/generate_204`
+- 检测目标包含 Google 204、Gstatic 204、Cloudflare、Apple、华为连通性检测等
 - 多个目标取最大延迟值，确保所有目标均可达
-- 相比仅测试 TCP/TLS 连通性，HTTP 请求延迟更贴近真实上网体验
+- 响应体验证排除劫持页面和空响应
+- 单次检测失败后自动重试（默认 2 次）
+- 检测失败节点直接删除，不保留
 
 ## 项目结构
 
@@ -174,9 +205,9 @@ proxy_pool/
 │   ├── config.py            # YAML 配置加载
 │   ├── database.py          # aiosqlite 异步数据库操作
 │   ├── models.py            # 数据模型（ProxyInfo / ProxyDBRecord / SubscriptionRecord）
-│   ├── parser.py            # 订阅拉取 & 解析（5 协议）
-│   ├── checker.py           # HTTP 延迟检测（多目标取最大值）
-│   ├── generator.py         # 核心 / Clash 订阅生成
+│   ├── parser.py            # 订阅拉取 & 解析（7 协议）
+│   ├── checker.py           # 内核转发检测 + TCP/TLS 回退检测
+│   ├── generator.py         # 纯文本 / Clash 订阅生成
 │   ├── scheduler.py         # APScheduler 定时任务调度
 │   ├── routers/
 │   │   ├── api.py           # REST API 路由
@@ -185,7 +216,8 @@ proxy_pool/
 │       ├── base.html        # 基础模板
 │       ├── index.html       # 主页面（管理 + 节点列表）
 │       └── subscription.html # 订阅链接页
-├── logs/                    # 日志目录（自动归档）
+├── logs/                    # 日志目录（单文件，不归档）
+├── data/                    # 数据库目录
 ├── config.yaml              # 配置文件
 ├── docker-compose.yaml      # Docker 编排
 ├── Dockerfile               # Docker 镜像
