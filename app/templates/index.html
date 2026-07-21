@@ -351,7 +351,7 @@
                 </thead>
                 <tbody>
                     {% for proxy in grouped.get(sub.id, []) %}
-                    <tr data-latency="{{ proxy.latency_ms }}" data-time="{{ proxy.created_at }}">
+                    <tr data-latency="{{ proxy.latency_ms }}" data-time="{{ proxy.created_at }}" data-sub="{{ sub.id }}">
                         <td>{{ loop.index }}</td>
                         <td title="{{ proxy.name }}">{{ proxy.name[:30] }}{% if proxy.name|length > 30 %}...{% endif %}</td>
                         <td><span class="badge bg-secondary">{{ proxy.protocol }}</span></td>
@@ -375,6 +375,9 @@
                 </tbody>
             </table>
         </div>
+        <nav aria-label="分页" class="mt-2" id="pager-{{ sub.id }}" data-sub="{{ sub.id }}" data-page="1" data-size="10">
+            <ul class="pagination pagination-sm mb-0 justify-content-center"></ul>
+        </nav>
     </div>
     {% endfor %}
 </div>
@@ -720,6 +723,75 @@ async function importConfig(input) {
 
 function refreshPage() { location.reload(); }
 
+// ---- 分页逻辑 ----
+const PAGE_SIZE = 10;
+const pageState = {};  // { subId: currentPage }
+
+function initPagination() {
+    document.querySelectorAll('nav[id^="pager-"]').forEach(function(nav) {
+        var subId = nav.dataset.sub;
+        pageState[subId] = 1;
+        applyPagination(subId);
+    });
+}
+
+function applyPagination(subId) {
+    var tbody = document.querySelector('#tbl-' + subId + ' tbody');
+    if (!tbody) return;
+    var rows = Array.from(tbody.querySelectorAll('tr[data-sub="' + subId + '"]'));
+    var total = rows.length;
+    var totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    var page = pageState[subId] || 1;
+    if (page > totalPages) page = totalPages;
+    pageState[subId] = page;
+
+    // 显示/隐藏行
+    rows.forEach(function(row, i) {
+        row.style.display = (i >= (page - 1) * PAGE_SIZE && i < page * PAGE_SIZE) ? '' : 'none';
+    });
+
+    // 更新序号（仅当前页可见行）
+    var idx = (page - 1) * PAGE_SIZE;
+    rows.forEach(function(row) {
+        if (row.style.display !== 'none') {
+            row.children[0].textContent = ++idx;
+        }
+    });
+
+    // 渲染分页按钮
+    var nav = document.getElementById('pager-' + subId);
+    if (!nav) return;
+    var ul = nav.querySelector('ul');
+    if (total <= PAGE_SIZE) { ul.innerHTML = ''; return; }
+
+    var html = '';
+    html += '<li class="page-item ' + (page <= 1 ? 'disabled' : '') + '">'
+         + '<a class="page-link" href="#" onclick="goPage(\'' + subId + '\',' + (page - 1) + ');return false">&laquo;</a></li>';
+
+    // 显示页码（最多显示5页，中间页码）
+    var startPage = Math.max(1, page - 2);
+    var endPage = Math.min(totalPages, startPage + 4);
+    if (endPage - startPage < 4) startPage = Math.max(1, endPage - 4);
+
+    for (var p = startPage; p <= endPage; p++) {
+        html += '<li class="page-item ' + (p === page ? 'active' : '') + '">'
+             + '<a class="page-link" href="#" onclick="goPage(\'' + subId + '\',' + p + ');return false">' + p + '</a></li>';
+    }
+
+    html += '<li class="page-item ' + (page >= totalPages ? 'disabled' : '') + '">'
+         + '<a class="page-link" href="#" onclick="goPage(\'' + subId + '\',' + (page + 1) + ');return false">&raquo;</a></li>';
+
+    ul.innerHTML = html;
+}
+
+function goPage(subId, page) {
+    pageState[subId] = page;
+    applyPagination(subId);
+}
+
+// 页面加载后初始化分页
+document.addEventListener('DOMContentLoaded', initPagination);
+
 // 表格排序
 function sortTable(tableId, key, th) {
     var table = document.getElementById(tableId);
@@ -747,10 +819,10 @@ function sortTable(tableId, key, th) {
         }
     });
     rows.forEach(function(row) { tbody.appendChild(row); });
-    // 更新序号
-    tbody.querySelectorAll('tr').forEach(function(row, i) {
-        row.children[0].textContent = i + 1;
-    });
+    // 排序后重置到第1页并重新分页
+    var subId = tableId.replace('tbl-', '');
+    pageState[subId] = 1;
+    applyPagination(subId);
 }
 
 // ---- 检测目标 URL ----
