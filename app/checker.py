@@ -326,7 +326,7 @@ class ProxyChecker:
                 return ProxyChecker._ss_to_xray(link)
             elif link.startswith("hysteria2://") or link.startswith("hy2://"):
                 return ProxyChecker._hysteria2_to_xray(link)
-            elif link.startswith(("socks5://", "socks4://", "socks4a://")):
+            elif link.startswith("socks5://"):
                 return ProxyChecker._socks_to_xray(link)
             elif link.startswith(("http://", "https://")) and "#" in link:
                 return ProxyChecker._http_to_xray(link)
@@ -696,7 +696,7 @@ class ProxyChecker:
 
     @staticmethod
     def _socks_to_xray(link: str) -> dict | None:
-        """socks5:// / socks4:// / socks4a:// 分享链接转内核 outbound"""
+        """socks5:// 分享链接转内核 outbound"""
         try:
             parsed = urlparse(link)
             address = parsed.hostname or ""
@@ -858,7 +858,7 @@ class ProxyChecker:
                 return self._parse_ss(link)
             elif link.startswith("hysteria2://") or link.startswith("hy2://"):
                 return self._parse_hysteria2(link)
-            elif link.startswith(("socks5://", "socks4://", "socks4a://")):
+            elif link.startswith("socks5://"):
                 return self._parse_socks(link)
             elif link.startswith(("http://", "https://")) and "#" in link:
                 return self._parse_http_proxy(link)
@@ -977,15 +977,17 @@ class ProxyChecker:
 
     def _parse_socks(self, link: str) -> ProxyConnInfo | None:
         try:
+            # socks4/socks4a 不再支持
+            if link.lower().startswith(("socks4://", "socks4a://")):
+                return None
             parsed = urlparse(link)
             address = parsed.hostname or ""
             port = parsed.port or 0
             if not address or not port:
                 return None
-            protocol = "socks5" if link.lower().startswith("socks5://") else "socks4"
             return ProxyConnInfo(
                 host=address, port=int(port),
-                use_tls=False, protocol=protocol,
+                use_tls=False, protocol="socks5",
             )
         except Exception:
             return None

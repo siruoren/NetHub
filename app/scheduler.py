@@ -143,6 +143,13 @@ class TaskScheduler:
 
             logger.info("订阅 #%d: 解析到 %d 个节点，并发检测中...", sub.id, len(proxies))
 
+            # 自动移除该订阅下已有的 socks4 节点（不再支持）
+            existing_proxies = await self.db.get_proxies_by_subscription_id(sub_id)
+            socks4_ids = [p.id for p in existing_proxies if p.protocol == "socks4"]
+            if socks4_ids:
+                await self.db.batch_delete_proxies(socks4_ids)
+                logger.info("订阅 #%d: 自动移除 %d 个 socks4 节点", sub_id, len(socks4_ids))
+
             # 并发检测所有节点延迟
             sub_checker = ProxyChecker(
                 check_urls=self.checker.check_urls,

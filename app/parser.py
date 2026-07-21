@@ -225,21 +225,22 @@ def _parse_hysteria2(line: str) -> ProxyInfo | None:
 
 
 def _parse_socks(line: str) -> ProxyInfo | None:
-    """解析 socks5:// / socks4:// / socks4a:// 链接
+    """解析 socks5:// 链接（socks4/socks4a 不再支持，直接跳过）
 
     格式: socks5://[user:pass@]host:port[#name]
     """
     try:
+        # socks4/socks4a 协议不再支持，跳过
+        if line.lower().startswith(("socks4://", "socks4a://")):
+            return None
         parsed = urlparse(line)
         address = parsed.hostname or ""
         port = str(parsed.port) if parsed.port else ""
         if not address or not port:
             return None
         name = unquote(parsed.fragment) if parsed.fragment else f"{address}:{port}"
-        # 统一协议名
-        protocol = "socks5" if line.lower().startswith("socks5://") else "socks4"
         return ProxyInfo(
-            protocol=protocol,
+            protocol="socks5",
             name=name,
             address=address,
             port=port,

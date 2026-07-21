@@ -26,22 +26,23 @@ def _normalize_link(proxy: ProxyDBRecord) -> str:
     """规范化分享链接，确保 socks/http 代理带有 #host-port 名称"""
     link = proxy.link
     if link.startswith(("socks5://", "socks4://", "socks4a://")):
+        # socks4/socks4a 不再支持，跳过
+        if link.lower().startswith(("socks4://", "socks4a://")):
+            return link
         parsed = urlparse(link)
         host = parsed.hostname or proxy.address
         port = parsed.port or int(proxy.port) if proxy.port.isdigit() else 0
-        protocol = "socks5" if link.lower().startswith("socks5://") else "socks4"
         if parsed.fragment:
             name = unquote(parsed.fragment)
         else:
             name = f"{host}-{port}"
-        # 重建: socks4://host:port#name  (如有用户名密码也保留)
         auth = ""
         if parsed.username:
             auth = unquote(parsed.username)
             if parsed.password:
                 auth += f":{unquote(parsed.password)}"
             auth += "@"
-        return f"{protocol}://{auth}{host}:{port}#{name}"
+        return f"socks5://{auth}{host}:{port}#{name}"
     elif link.startswith(("http://", "https://")) and ("#" in link or proxy.protocol in ("http", "https")):
         parsed = urlparse(link)
         host = parsed.hostname or proxy.address
@@ -124,7 +125,7 @@ def _link_to_clash_proxy(link: str, fallback_name: str) -> dict | None:
             return _ss_link_to_clash(link, fallback_name)
         elif link.startswith("hysteria2://") or link.startswith("hy2://"):
             return _hysteria2_link_to_clash(link, fallback_name)
-        elif link.startswith(("socks5://", "socks4://", "socks4a://")):
+        elif link.startswith("socks5://"):
             return _socks_link_to_clash(link, fallback_name)
         elif link.startswith(("http://", "https://")) and "#" in link:
             return _http_link_to_clash(link, fallback_name)
@@ -134,7 +135,7 @@ def _link_to_clash_proxy(link: str, fallback_name: str) -> dict | None:
 
 
 def _socks_link_to_clash(link: str, fallback_name: str) -> dict:
-    """socks5:// / socks4:// / socks4a:// 转 Clash proxy"""
+    """socks5:// 转 Clash proxy"""
     parsed = urlparse(link)
     name = unquote(parsed.fragment) if parsed.fragment else fallback_name
     proxy = {
