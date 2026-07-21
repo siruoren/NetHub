@@ -26,7 +26,7 @@ class ProxyDBRecord:
     link: str
     latency_ms: float  # 延迟毫秒，-1=未检测
     fail_count: int  # 连续失败次数
-    source: str  # 来源订阅 URL
+    subscription_id: int  # 所属订阅源 ID
     last_check_time: str  # ISO8601
     last_success_time: str  # ISO8601
     created_at: str  # ISO8601

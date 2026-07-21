@@ -28,7 +28,7 @@ async def index(request: Request):
         db.get_all_proxies(),
         db.get_stats(),
         db.get_all_subscriptions(),
-        db.get_proxies_grouped_by_source(config.check.latency_threshold),
+        db.get_proxies_grouped_by_subscription(config.check.latency_threshold),
         db.get_check_urls(),
         db.get_all_instance_sources(),
     )
@@ -42,17 +42,14 @@ async def index(request: Request):
         [dict(asdict(s)) for s in instance_sources],
         ensure_ascii=False,
     )
-    # 计算每个订阅源的可用节点数量
+
+    # 计算每个订阅源的可用节点数量（grouped 按 subscription_id 分组）
     sub_available_counts = {}
     for sub in subscriptions:
-        sub_available_counts[sub.url] = len(grouped.get(sub.url, []))
-    # 计算每个服务实例源的可用节点数量
-    inst_available_counts = {}
-    for inst in instance_sources:
-        source_tag = f"instance:{inst.base_url}"
-        inst_available_counts[inst.id] = len(grouped.get(source_tag, []))
+        sub_available_counts[sub.id] = len(grouped.get(sub.id, []))
+
     subscriptions_json = json.dumps(
-        [dict(asdict(s), available_count=sub_available_counts.get(s.url, 0)) for s in subscriptions],
+        [dict(asdict(s), available_count=sub_available_counts.get(s.id, 0)) for s in subscriptions],
         ensure_ascii=False,
     )
 
@@ -68,7 +65,6 @@ async def index(request: Request):
             "check_urls": check_urls,
             "instance_sources": instance_sources,
             "instance_sources_json": instance_sources_json,
-            "inst_available_counts": inst_available_counts,
             "grouped": grouped,
             "latency_threshold": config.check.latency_threshold,
             "last_fetch_time": scheduler.last_fetch_time,

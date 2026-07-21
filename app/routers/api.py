@@ -231,11 +231,8 @@ async def auto_add_subscription(req: AutoSubRequest):
     # 注册定时任务
     scheduler = get_scheduler()
     scheduler._add_subscription_job(sub)
-    # 自动触发拉取，拉取完成后自动验证
-    async def fetch_and_verify():
-        await scheduler._fetch_single_subscription(sub.id)
-        await scheduler.verify_subscription_proxies(sub.id)
-    asyncio.create_task(fetch_and_verify())
+    # 自动触发拉取（拉取完成后会自动验证该订阅下所有已入库节点）
+    asyncio.create_task(scheduler._fetch_single_subscription(sub.id))
     return {
         "status": "added",
         "message": "订阅已添加，正在拉取并验证节点",
@@ -273,11 +270,8 @@ async def update_subscription(sub_id: int, url: str = None, crontab: str = None,
     scheduler.refresh_subscription_job(sub)
 
     if sub.enabled:
-        # 启用时自动拉取并验证该订阅源
-        async def fetch_and_verify():
-            await scheduler._fetch_single_subscription(sub.id)
-            await scheduler.verify_subscription_proxies(sub.id)
-        asyncio.create_task(fetch_and_verify())
+        # 启用时自动拉取（拉取完成后会自动验证该订阅下所有已入库节点）
+        asyncio.create_task(scheduler._fetch_single_subscription(sub.id))
     else:
         # 禁用时重置拉取状态
         await db.update_fetch_status(sub_id, "idle")
@@ -303,10 +297,10 @@ async def get_proxies_grouped():
     """获取按订阅来源分组的可用节点"""
     db = get_db()
     config = get_config()
-    grouped = await db.get_proxies_grouped_by_source(config.check.latency_threshold)
+    grouped = await db.get_proxies_grouped_by_subscription(config.check.latency_threshold)
     result = {}
-    for source, proxies in grouped.items():
-        result[source] = [_proxy_to_dict(p) for p in proxies]
+    for sub_id, proxies in grouped.items():
+        result[str(sub_id)] = [_proxy_to_dict(p) for p in proxies]
     return {"grouped": result}
 
 
@@ -320,7 +314,7 @@ def _proxy_to_dict(proxy) -> dict:
         "port": proxy.port,
         "latency_ms": proxy.latency_ms,
         "fail_count": proxy.fail_count,
-        "source": proxy.source,
+        "subscription_id": proxy.subscription_id,
         "last_check_time": proxy.last_check_time,
         "last_success_time": proxy.last_success_time,
         "status": proxy.status,

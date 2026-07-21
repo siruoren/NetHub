@@ -134,7 +134,7 @@
                                 <td>{{ sub.id }}</td>
                                 <td><code style="font-size:0.8rem">{{ sub.crontab }}</code></td>
                                 <td><span class="badge bg-secondary">{{ sub.total_count }}</span></td>
-                                <td><span class="badge bg-info">{{ sub_available_counts.get(sub.url, 0) }}</span></td>
+                                <td><span class="badge bg-info">{{ sub_available_counts.get(sub.id, 0) }}</span></td>
                                 <td>{{ sub.latency_threshold }}ms</td>
                                 <td>{{ sub.max_concurrent }}</td>
                                 <td>
@@ -218,7 +218,7 @@
                             <tr>
                                 <th>#</th>
                                 <th>地址</th>
-                                <th>总数</th>
+                                <th>已连接</th>
                                 <th>Crontab</th>
                                 <th>状态</th>
                                 <th>更新</th>
@@ -303,46 +303,30 @@
     </div>
 </div>
 
-<!-- 按来源 Tab 切换（订阅源 + 服务实例源，只显示有可用节点的） -->
+<!-- 按来源 Tab 切换（订阅源，只显示有可用节点的） -->
 {% set available_subs = [] %}
 {% for sub in subscriptions %}
-{% if sub_available_counts.get(sub.url, 0) > 0 %}
+{% if sub_available_counts.get(sub.id, 0) > 0 %}
 {% if available_subs.append(sub) %}{% endif %}
 {% endif %}
 {% endfor %}
-{% set available_insts = [] %}
-{% for inst in instance_sources %}
-{% if inst_available_counts.get(inst.id, 0) > 0 %}
-{% if available_insts.append(inst) %}{% endif %}
-{% endif %}
-{% endfor %}
-{% set has_any = available_subs or available_insts %}
+{% set has_any = available_subs %}
 {% if has_any %}
 <ul class="nav nav-tabs mb-0" id="subTab" role="tablist">
     {% for sub in available_subs %}
     <li class="nav-item" role="presentation" data-bs-toggle="tooltip" data-bs-placement="bottom" title="{{ sub.url }}">
-        <button class="nav-link {{ 'active' if loop.index == 1 and not available_insts else '' }}" id="tab-{{ sub.id }}"
+        <button class="nav-link {{ 'active' if loop.index == 1 else '' }}" id="tab-{{ sub.id }}"
                 data-bs-toggle="tab" data-bs-target="#pane-{{ sub.id }}" type="button" role="tab"
                 data-sub-id="{{ sub.id }}">
             订阅 #{{ sub.id }}
-            <span class="badge bg-primary ms-1">{{ sub_available_counts.get(sub.url, 0) }}</span>
-        </button>
-    </li>
-    {% endfor %}
-    {% for inst in available_insts %}
-    <li class="nav-item" role="presentation" data-bs-toggle="tooltip" data-bs-placement="bottom" title="{{ inst.base_url }}">
-        <button class="nav-link {{ 'active' if loop.index == 1 and not available_subs else '' }}" id="tab-inst-{{ inst.id }}"
-                data-bs-toggle="tab" data-bs-target="#pane-inst-{{ inst.id }}" type="button" role="tab"
-                data-sub-id="inst-{{ inst.id }}">
-            实例 #{{ inst.id }}
-            <span class="badge bg-success ms-1">{{ inst_available_counts.get(inst.id, 0) }}</span>
+            <span class="badge bg-primary ms-1">{{ sub_available_counts.get(sub.id, 0) }}</span>
         </button>
     </li>
     {% endfor %}
 </ul>
 <div class="tab-content border border-top-0 rounded-bottom p-2 bg-white">
     {% for sub in available_subs %}
-    <div class="tab-pane fade {{ 'show active' if loop.index == 1 and not available_insts else '' }}" id="pane-{{ sub.id }}" role="tabpanel">
+    <div class="tab-pane fade {{ 'show active' if loop.index == 1 else '' }}" id="pane-{{ sub.id }}" role="tabpanel">
         <div class="d-flex justify-content-end mb-2 gap-1">
             <button class="btn btn-primary btn-sm" onclick="triggerFetchSub({{ sub.id }})">
                 <i class="bi bi-cloud-download"></i> 拉取此订阅
@@ -366,7 +350,7 @@
                     </tr>
                 </thead>
                 <tbody>
-                    {% for proxy in grouped.get(sub.url, []) %}
+                    {% for proxy in grouped.get(sub.id, []) %}
                     <tr data-latency="{{ proxy.latency_ms }}" data-time="{{ proxy.created_at }}">
                         <td>{{ loop.index }}</td>
                         <td title="{{ proxy.name }}">{{ proxy.name[:30] }}{% if proxy.name|length > 30 %}...{% endif %}</td>
@@ -385,58 +369,8 @@
                         </td>
                     </tr>
                     {% endfor %}
-                    {% if not grouped.get(sub.url) %}
+                    {% if not grouped.get(sub.id) %}
                     <tr><td colspan="8" class="text-center text-muted py-3">暂无可用节点，请先拉取此订阅</td></tr>
-                    {% endif %}
-                </tbody>
-            </table>
-        </div>
-    </div>
-    {% endfor %}
-    {% for inst in available_insts %}
-    {% set inst_source_tag = 'instance:' + inst.base_url %}
-    <div class="tab-pane fade {{ 'show active' if loop.index == 1 and not available_subs else '' }}" id="pane-inst-{{ inst.id }}" role="tabpanel">
-        <div class="d-flex justify-content-end mb-2 gap-1">
-            <button class="btn btn-success btn-sm" onclick="fetchInstanceSource({{ inst.id }})">
-                <i class="bi bi-cloud-download"></i> 获取此实例源
-            </button>
-        </div>
-        <div class="table-responsive">
-            <table class="table table-hover table-sm mb-0" id="tbl-inst-{{ inst.id }}">
-                <thead class="table-light">
-                    <tr>
-                        <th width="30">#</th>
-                        <th>名称</th>
-                        <th>协议</th>
-                        <th>地址</th>
-                        <th>端口</th>
-                        <th class="sortable" data-sort="latency" onclick="sortTable('tbl-inst-{{ inst.id }}','latency',this)">延迟 <i class="bi bi-arrow-down-up"></i></th>
-                        <th class="sortable" data-sort="time" onclick="sortTable('tbl-inst-{{ inst.id }}','time',this)">入库时间 <i class="bi bi-arrow-down-up"></i></th>
-                        <th>操作</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for proxy in grouped.get(inst_source_tag, []) %}
-                    <tr data-latency="{{ proxy.latency_ms }}" data-time="{{ proxy.created_at }}">
-                        <td>{{ loop.index }}</td>
-                        <td title="{{ proxy.name }}">{{ proxy.name[:30] }}{% if proxy.name|length > 30 %}...{% endif %}</td>
-                        <td><span class="badge bg-secondary">{{ proxy.protocol }}</span></td>
-                        <td><code>{{ proxy.address }}</code></td>
-                        <td>{{ proxy.port }}</td>
-                        <td>
-                            <span class="{{ 'latency-good' if proxy.latency_ms < 500 else ('latency-medium' if proxy.latency_ms < 1500 else 'latency-bad') }}">
-                                {{ "%.0f"|format(proxy.latency_ms) }} ms
-                            </span>
-                        </td>
-                        <td><small>{{ proxy.created_at[:19] if proxy.created_at else '-' }}</small></td>
-                        <td>
-                            <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem"
-                                    onclick="deleteProxy({{ proxy.id }})">删除</button>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                    {% if not grouped.get(inst_source_tag) %}
-                    <tr><td colspan="8" class="text-center text-muted py-3">暂无可用节点，请先获取此实例源</td></tr>
                     {% endif %}
                 </tbody>
             </table>
