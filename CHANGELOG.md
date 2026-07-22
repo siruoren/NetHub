@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.1.0] - 2026-07-22
+
+### 订阅解析扩展
+
+- **Clash YAML 格式支持** - 新增 `_is_clash_yaml` 检测、`_parse_clash_yaml` 解析和 `_clash_proxy_to_info` 转换，支持 vmess/vless/trojan/ss/hysteria2/socks5/http 7 种代理类型的 Clash YAML 订阅解析
+- **解析错误行跳过** - 订阅源解析跳过 `#` 和 `//` 开头的注释行，解析失败的行在 debug 级别记录日志，不中断整体解析流程
+- **行首特殊字符清理重试** - 解析每行时先尝试原行解析，失败后用 `re.sub(r'^[^a-zA-Z0-9]+', '', line)` 剻除 BOM、emoji、控制字符、空格、制表符、标点等行首特殊字符后重试
+
+### 性能优化（后台）
+
+- **SQLite WAL 模式 + PRAGMA 优化** - `journal_mode=WAL`、`synchronous=NORMAL`、`cache_size=-8000`（8MB）、`temp_store=MEMORY`，显著提升并发读写性能
+- **复合索引** - 新增 `idx_proxies_sub_created(subscription_id, created_at)` 和 `idx_proxies_available(latency_ms, fail_count, subscription_id)`，加速分组查询和可用节点筛选
+- **统计信息内存缓存** - `get_stats()` 使用 `_stats_cache` + `_stats_dirty` 脚标记机制，数据不变时直接返回缓存，避免重复 SQL 查询；所有修改数据的方法末尾调用 `_invalidate_stats()`
+- **`get_stats` 合并查询** - 4 次 SQL 查询（subscriptions 计数 + proxies 可用数 + 平均延迟 + 协议分布）合并为 2 次（subscriptions 计数 + proxies `GROUP BY protocol` 一次获得可用数/加权平均延迟/协议分布）
+- **共享 aiohttp session** - `ProxyChecker` 持有共享 `_session`，`_http_request_via_proxy` 复用而非每次检测创建新 `TCPConnector` + `ClientSession`；shutdown 时关闭 session
+- **共享 checker** - scheduler 不再每次拉取/验证创建新 `ProxyChecker`，直接使用 `self.checker` 复用 HTTP session 和并发控制
+- **批量插入节点** - `batch_insert_proxies` 使用 `executemany` + `INSERT OR IGNORE` 替代逐条 `execute` + `try/except IntegrityError`，单次 commit
+- **socks4 过滤用 SQL 直接删除** - 新增 `delete_proxies_by_subscription_id_and_protocol`，不再全量获取再遍历过滤
+- **N+1 查询优化** - `_fetch_single_subscription` 中用 `get_proxies_by_links`（`IN` 查询）替代逐个 `get_proxy_by_link`
+- **`delete_subscription` 单次 commit** - 删除订阅源及其下所有节点合并为同一事务中的 2 条 DELETE，1 次 commit
+- **合并元信息更新** - 新增 `batch_update_subscription_meta`（合并 total_count + fetch_status + reset_empty）和 `batch_update_instance_meta`（合并 total_count + fetch_status），单次 commit
+- **`verify_stored_proxies` 分组查询** - 从 `get_all_proxies()` 全表扫描改为 `get_proxies_grouped_by_subscription`（利用复合索引），验证阈值放宽 2 倍避免误删
+- **`get_proxies_grouped_by_subscription` 精简列** - `SELECT *` 12 列改为 `SELECT` 9 列（仅查模板需要的字段），减少数据传输和对象创建开销
+- **Jinja2 模板缓存** - `cache_size` 从 0 改为 128，模板编译结果只生成一次后续直接复用
+
+### 性能优化（前台）
+
+- **JSON API 局部刷新** - `refreshPage()` 改为并行请求 `/api/stats` + `/api/proxies/grouped` + `/api/subscriptions` 三个 JSON API，局部更新统计数字、协议分布图、订阅源表格和当前 Tab 节点列表，替代整页 HTML → DOMParser 解析 → innerHTML 替换 → 正则提取 JS 数据
+- **协议分布图动态更新** - 15 秒统计刷新时同步更新 Chart.js 饼图数据，使用 `update('none')` 无动画快速刷新
+- **`subscriptions_json` 精简序列化** - 不再使用 `asdict()` 递归序列化所有 12 个字段，改为手动构造仅包含 JS 需要的 7~8 个字段的字典
+- **`_proxy_to_dict` 精简** - 去掉不存在的 `status` 字段（修复 `AttributeError`）、前端不使用的 `last_check_time`/`last_success_time`，添加前端需要的 `created_at`
+- **CDN 预连接** - `<link rel="dns-prefetch">` + `<link rel="preconnect">` 到 jsdelivr CDN，提前完成 DNS 解析和 TCP/TLS 连接建立
+- **Chart.js 异步加载** - `<script async>` 加载不阻塞首屏渲染，饼图初始化改为 `initProtocolChart()` 函数带轮询等待（最多 3 秒）
+- **Bootstrap JS `defer` 加载** - `<script defer>` 不阻塞 HTML 解析，`initTooltips()` 改为 `DOMContentLoaded` 回调中调用
+
+---
+
 ## [2.0.0] - 2026-07-20
 
 ### 核心重构
