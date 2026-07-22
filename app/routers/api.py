@@ -273,6 +273,10 @@ async def update_subscription(sub_id: int, url: Optional[str] = None,
     db = get_db()
     kwargs = {}
     if url is not None:
+        # 检查新 URL 是否已被其他订阅使用
+        existing = await db.get_subscription_by_url(url)
+        if existing and existing.id != sub_id:
+            raise HTTPException(status_code=409, detail="订阅地址已被其他订阅使用")
         kwargs["url"] = url
     if crontab is not None:
         kwargs["crontab"] = crontab
