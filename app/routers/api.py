@@ -154,6 +154,22 @@ async def get_stats():
     return stats
 
 
+@router.put("/config/max-proxies")
+async def update_max_proxies(request: Request):
+    """更新最大可用条目数（保存到数据库）"""
+    body = await request.json()
+    max_proxies = body.get("max_proxies")
+    if max_proxies is None or not isinstance(max_proxies, int) or max_proxies < 1:
+        return {"error": "max_proxies 必须为正整数"}
+    config = get_config()
+    config.scheduler.max_proxies = max_proxies
+    db = get_db()
+    await db.set_setting("max_proxies", str(max_proxies))
+    # 立即执行一次限制检查
+    deleted = await db.enforce_max_proxies(max_proxies)
+    return {"max_proxies": max_proxies, "deleted": deleted}
+
+
 @router.get("/health")
 async def health_check():
     """健康检查"""
@@ -552,6 +568,7 @@ async def export_config():
 
     config = {
         "version": 1,
+        "max_proxies": get_config().scheduler.max_proxies,
         "subscriptions": [
             {
                 "url": s.url,
@@ -607,6 +624,12 @@ async def import_config(req: ConfigImportRequest):
     sub_dup = 0
     inst_added = 0
     inst_dup = 0
+
+    # 导入 max_proxies 设置
+    max_proxies = config.get("max_proxies")
+    if max_proxies and isinstance(max_proxies, int) and max_proxies > 0:
+        get_config().scheduler.max_proxies = max_proxies
+        await db.set_setting("max_proxies", str(max_proxies))
 
     # 导入订阅源
     for item in config.get("subscriptions", []):

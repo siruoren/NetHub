@@ -17,7 +17,7 @@
         <div class="card stat-card text-white bg-success">
             <div class="card-body">
                 <h6 class="card-title"><i class="bi bi-check-circle"></i> 可用节点数</h6>
-                <h3 class="mb-0"><span id="availableCount">{{ stats.available }}</span> <small style="font-size:0.6em;opacity:0.7">/ {{ max_proxies }}</small></h3>
+                <h3 class="mb-0"><span id="availableCount">{{ stats.available }}</span> <small style="font-size:0.6em;opacity:0.7">/ <input id="maxProxiesInput" type="number" min="1" value="{{ max_proxies }}" style="width:3.5em;background:transparent;border:none;border-bottom:1px solid rgba(255,255,255,0.5);color:inherit;font-size:inherit;text-align:center;outline:none" onchange="updateMaxProxies(this.value)" onkeydown="if(event.key==='Enter')this.blur()"></small></h3>
             </div>
         </div>
     </div>
@@ -559,6 +559,11 @@ setInterval(function() {
             if (el) el.textContent = stats.available;
         }
         if (cards[2]) cards[2].textContent = Math.round(stats.avg_latency_ms) + ' ms';
+        // 同步 max_proxies 输入框（如果未被聚焦编辑）
+        if (stats.max_proxies) {
+            var mpInput = document.getElementById('maxProxiesInput');
+            if (mpInput && document.activeElement !== mpInput) mpInput.value = stats.max_proxies;
+        }
         // 动态更新协议分布图
         if (protocolChartInstance && stats.protocol_distribution) {
             var dist = stats.protocol_distribution;
@@ -697,6 +702,34 @@ async function triggerVerifySub(subId) {
         if (resp.ok) { alert(data.message); setTimeout(refreshPage, 5000); }
         else { alert('验证失败: ' + (data.detail || '')); }
     } catch (e) { alert('请求失败: ' + e.message); }
+}
+
+async function updateMaxProxies(val) {
+    var n = parseInt(val);
+    if (!n || n < 1) { alert('最大条目数必须为正整数'); return; }
+    try {
+        var res = await fetch('/api/config/max-proxies', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({max_proxies: n}),
+        });
+        var data = await res.json();
+        if (data.error) { alert(data.error); return; }
+        document.getElementById('maxProxiesInput').value = data.max_proxies;
+        if (data.deleted > 0) {
+            alert('已删除 ' + data.deleted + ' 个延迟最大/最老的节点');
+            refreshPage();
+        }
+        // 更新可用节点数
+        var el = document.getElementById('availableCount');
+        if (el) {
+            var statsRes = await fetch('/api/stats', {cache:'no-store'});
+            var stats = await statsRes.json();
+            el.textContent = stats.available;
+        }
+    } catch(e) {
+        alert('更新失败: ' + e.message);
+    }
 }
 
 async function deleteProxy(id) {

@@ -93,6 +93,11 @@ class ProxyDatabase:
             );
 
             CREATE INDEX IF NOT EXISTS idx_instance_sources_base_url ON instance_sources(base_url);
+
+            CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT    PRIMARY KEY,
+                value TEXT    NOT NULL DEFAULT ''
+            );
         """)
         await self._db.commit()
 
@@ -266,7 +271,7 @@ class ProxyDatabase:
         return cursor.rowcount
 
     async def enforce_max_proxies(self, max_count: int) -> int:
-        """强制执行最大条目数限制，超出则按入库时间删除最老的节点，返回删除数量"""
+        """强制执行最大条目数限制，超出则优先删除延迟最大、历史最老的节点，返回删除数量"""
         if max_count <= 0:
             return 0
         cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM proxies")
@@ -276,7 +281,7 @@ class ProxyDatabase:
         excess = total - max_count
         cursor = await self._db.execute(
             """DELETE FROM proxies WHERE id IN (
-                SELECT id FROM proxies ORDER BY created_at ASC LIMIT ?
+                SELECT id FROM proxies ORDER BY latency_ms DESC, created_at ASC LIMIT ?
             )""",
             (excess,),
         )
@@ -738,5 +743,23 @@ class ProxyDatabase:
         params.append(source_id)
         await self._db.execute(
             f"UPDATE instance_sources SET {', '.join(updates)} WHERE id = ?", params
+        )
+        await self._db.commit()
+
+    # ---- 设置（key-value） ----
+
+    async def get_setting(self, key: str, default: str = "") -> str:
+        """获取设置值，不存在则返回 default"""
+        cursor = await self._db.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        )
+        row = await cursor.fetchone()
+        return row["value"] if row else default
+
+    async def set_setting(self, key: str, value: str) -> None:
+        """设置值（INSERT OR REPLACE）"""
+        await self._db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (key, value),
         )
         await self._db.commit()

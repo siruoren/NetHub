@@ -99,6 +99,15 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
         await _db.init()
         logger.info("数据库初始化完成: %s", _config.database.path)
 
+        # 从数据库加载持久化设置（覆盖配置文件默认值）
+        max_proxies_str = await _db.get_setting("max_proxies", "")
+        if max_proxies_str:
+            try:
+                _config.scheduler.max_proxies = int(max_proxies_str)
+                logger.info("从数据库加载 max_proxies = %d", _config.scheduler.max_proxies)
+            except ValueError:
+                pass
+
         # 初始化检测 URL：仅当数据库为空时插入默认值
         await _db.init_check_urls(DEFAULT_CHECK_URLS)
 
