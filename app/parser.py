@@ -2,7 +2,8 @@ from __future__ import annotations
 """订阅解析模块 - 拉取和解析节点订阅链接
 
 核心解析逻辑移植自 Proxy_List/get_connected_proxies/get_connected_proxies.py
-支持 vmess / vless / trojan / ss / hysteria2 / socks5 / socks4 / http / https 协议
+支持 vmess / vless / trojan / ss / hysteria2 / socks5 / http / https 协议
+支持 Clash YAML 格式订阅解析
 """
 
 import base64
@@ -12,6 +13,7 @@ import logging
 from urllib.parse import urlparse, unquote
 
 import aiohttp
+import yaml
 
 from app.models import ProxyInfo
 
@@ -29,11 +31,22 @@ async def fetch_subscription(url: str, timeout: float = 15.0) -> str:
 def parse_subscription(content: str) -> list[ProxyInfo]:
     """解析订阅内容，返回 ProxyInfo 列表
 
-    支持 vmess / vless / trojan / ss / hysteria2 / socks5 / socks4 / http / https 协议
-    自动检测 base64 编码的订阅内容并解码
+    支持格式：
+    - 纯文本分享链接（vmess/vless/trojan/ss/hysteria2/socks5/http）
+    - base64 编码的分享链接
+    - Clash YAML 格式（proxies 列表）
     """
+    stripped = content.strip()
+
+    # 检测 Clash YAML 格式（含 proxies: 字段）
+    if _is_clash_yaml(stripped):
+        clash_proxies = _parse_clash_yaml(stripped)
+        if clash_proxies:
+            logger.info("检测到 Clash YAML 格式，解析到 %d 个节点", len(clash_proxies))
+            return clash_proxies
+
     share_links: list[ProxyInfo] = []
-    lines = content.strip().split("\n")
+    lines = stripped.split("\n")
 
     # 支持的协议前缀
     supported_prefixes = (
@@ -51,39 +64,335 @@ def parse_subscription(content: str) -> list[ProxyInfo]:
 
     if not has_protocol_prefix:
         try:
-            decoded = base64.b64decode(content.strip() + "===").decode("utf-8")
+            decoded = base64.b64decode(stripped + "===").decode("utf-8")
             lines = decoded.strip().split("\n")
             logger.info("检测到 base64 编码内容，已解码")
         except Exception:
-            lines = content.strip().split("\n")
+            lines = stripped.split("\n")
 
     for line in lines:
         line = line.strip()
         if not line:
             continue
 
-        if line.startswith("vmess://"):
-            info = _parse_vmess(line)
-        elif line.startswith("vless://"):
-            info = _parse_vless(line)
-        elif line.startswith("trojan://"):
-            info = _parse_trojan(line)
-        elif line.startswith("ss://"):
-            info = _parse_ss(line)
-        elif line.startswith("hysteria2://") or line.startswith("hy2://"):
-            info = _parse_hysteria2(line)
-        elif line.startswith(("socks5://", "socks4://", "socks4a://")):
-            info = _parse_socks(line)
-        elif line.startswith(("http://", "https://")) and "#" in line:
-            # 仅当 http/https 链接带 #fragment 时视为代理节点（避免误判普通 URL）
-            info = _parse_http_proxy(line)
-        else:
-            info = None
+        # 跳过注释行和常见非协议行
+        if line.startswith("#") or line.startswith("//"):
+            continue
+
+        info = _try_parse_line(line)
 
         if info:
             share_links.append(info)
+        else:
+            logger.debug("忽略无法解析的行: %s", line[:80])
 
     return share_links
+
+
+def _try_parse_line(line: str) -> ProxyInfo | None:
+    """尝试解析单行，失败后去除行首特殊字符重试"""
+    info = _parse_line(line)
+    if info is not None:
+        return info
+
+    # 去除行首特殊字符（非字母数字的不可见/控制字符），然后重试
+    import re
+    cleaned = re.sub(r'^[^a-zA-Z0-9]+', '', line)
+    if cleaned != line and cleaned:
+        info = _parse_line(cleaned)
+        if info is not None:
+            return info
+
+    return None
+
+
+def _parse_line(line: str) -> ProxyInfo | None:
+    """解析单行分享链接"""
+    if line.startswith("vmess://"):
+        return _parse_vmess(line)
+    elif line.startswith("vless://"):
+        return _parse_vless(line)
+    elif line.startswith("trojan://"):
+        return _parse_trojan(line)
+    elif line.startswith("ss://"):
+        return _parse_ss(line)
+    elif line.startswith("hysteria2://") or line.startswith("hy2://"):
+        return _parse_hysteria2(line)
+    elif line.startswith(("socks5://", "socks4://", "socks4a://")):
+        return _parse_socks(line)
+    elif line.startswith(("http://", "https://")) and "#" in line:
+        return _parse_http_proxy(line)
+    return None
+
+
+def _is_clash_yaml(content: str) -> bool:
+    """检测内容是否为 Clash YAML 格式"""
+    # 快速检测：包含 proxies: 关键字
+    for line in content.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("proxies:"):
+            return True
+        # 也匹配 "proxies :" 或缩进格式
+        if stripped.replace(" ", "").startswith("proxies:"):
+            return True
+    return False
+
+
+def _parse_clash_yaml(content: str) -> list[ProxyInfo]:
+    """解析 Clash YAML 格式订阅，将每个代理转换为分享链接
+
+    支持 type: vmess / vless / trojan / ss / hysteria2 / socks5 / http
+    """
+    try:
+        data = yaml.safe_load(content)
+    except Exception:
+        return []
+
+    if not isinstance(data, dict) or "proxies" not in data:
+        return []
+
+    proxies_data = data["proxies"]
+    if not isinstance(proxies_data, list):
+        return []
+
+    results: list[ProxyInfo] = []
+    for proxy in proxies_data:
+        if not isinstance(proxy, dict):
+            continue
+        info = _clash_proxy_to_info(proxy)
+        if info:
+            results.append(info)
+
+    return results
+
+
+def _clash_proxy_to_info(proxy: dict) -> ProxyInfo | None:
+    """将单个 Clash 代理配置转为 ProxyInfo + 分享链接"""
+    ptype = proxy.get("type", "").lower()
+    name = proxy.get("name", "")
+    server = proxy.get("server", "")
+    port = str(proxy.get("port", ""))
+
+    if not server or not port:
+        return None
+
+    if ptype == "vmess":
+        link = _clash_to_vmess_link(proxy, name, server, port)
+    elif ptype == "vless":
+        link = _clash_to_vless_link(proxy, name, server, port)
+    elif ptype == "trojan":
+        link = _clash_to_trojan_link(proxy, name, server, port)
+    elif ptype in ("ss", "shadowsocks"):
+        link = _clash_to_ss_link(proxy, name, server, port)
+    elif ptype in ("hysteria2", "hy2"):
+        link = _clash_to_hysteria2_link(proxy, name, server, port)
+    elif ptype == "socks5":
+        link = _clash_to_socks5_link(proxy, name, server, port)
+    elif ptype in ("http", "https"):
+        link = _clash_to_http_link(proxy, name, server, port, ptype)
+    else:
+        return None
+
+    if not link:
+        return None
+
+    protocol = ptype if ptype != "shadowsocks" else "ss"
+    return ProxyInfo(protocol=protocol, name=name, address=server, port=port, link=link)
+
+
+def _clash_to_vmess_link(proxy: dict, name: str, server: str, port: str) -> str | None:
+    """Clash vmess → vmess:// 链接"""
+    try:
+        import uuid
+        config = {
+            "v": "2",
+            "ps": name,
+            "add": server,
+            "port": int(port),
+            "id": proxy.get("uuid", ""),
+            "aid": proxy.get("alterId", 0),
+            "net": proxy.get("network", "ws"),
+            "type": "none",
+            "host": "",
+            "path": "",
+            "tls": "tls" if proxy.get("tls") else "",
+            "sni": proxy.get("servername", "") or proxy.get("sni", ""),
+        }
+        # 传输层
+        network = config["net"]
+        ws_opts = proxy.get("ws-opts", {})
+        h2_opts = proxy.get("h2-opts", {})
+        grpc_opts = proxy.get("grpc-opts", {})
+
+        if network == "ws" and ws_opts:
+            config["path"] = ws_opts.get("path", "/")
+            if ws_opts.get("headers", {}).get("host"):
+                config["host"] = ws_opts["headers"]["host"]
+        elif network == "h2" and h2_opts:
+            config["path"] = h2_opts.get("path", "/")
+            hosts = h2_opts.get("host", [])
+            if hosts:
+                config["host"] = hosts[0]
+        elif network == "grpc" and grpc_opts:
+            config["path"] = grpc_opts.get("grpc-service-name", "")
+
+        b64 = base64.b64encode(json.dumps(config, separators=(",", ":")).encode()).decode().rstrip("=")
+        return f"vmess://{b64}"
+    except Exception:
+        return None
+
+
+def _clash_to_vless_link(proxy: dict, name: str, server: str, port: str) -> str | None:
+    """Clash vless → vless:// 链接"""
+    try:
+        uuid = proxy.get("uuid", "")
+        params = []
+        # 传输层
+        network = proxy.get("network", "ws")
+        params.append(f"type={network}")
+        # security
+        if proxy.get("tls"):
+            params.append("security=tls")
+            sni = proxy.get("servername", "") or proxy.get("sni", "")
+            if sni:
+                params.append(f"sni={sni}")
+            if proxy.get("alpn"):
+                params.append(f"alpn={','.join(proxy['alpn'])}")
+            fp = proxy.get("client-fingerprint", "")
+            if fp:
+                params.append(f"fp={fp}")
+        # flow
+        flow = proxy.get("flow", "")
+        if flow:
+            params.append(f"flow={flow}")
+        # ws-opts
+        ws_opts = proxy.get("ws-opts", {})
+        if network == "ws" and ws_opts:
+            if ws_opts.get("path"):
+                params.append(f"path={ws_opts['path']}")
+            if ws_opts.get("headers", {}).get("host"):
+                params.append(f"host={ws_opts['headers']['host']}")
+        # h2-opts
+        h2_opts = proxy.get("h2-opts", {})
+        if network == "h2" and h2_opts:
+            if h2_opts.get("path"):
+                params.append(f"path={h2_opts['path']}")
+            hosts = h2_opts.get("host", [])
+            if hosts:
+                params.append(f"host={hosts[0]}")
+        # grpc-opts
+        grpc_opts = proxy.get("grpc-opts", {})
+        if network == "grpc" and grpc_opts:
+            if grpc_opts.get("grpc-service-name"):
+                params.append(f"serviceName={grpc_opts['grpc-service-name']}")
+
+        fragment = _quote(name)
+        query = "&".join(params)
+        return f"vless://{uuid}@{server}:{port}?{query}#{fragment}"
+    except Exception:
+        return None
+
+
+def _clash_to_trojan_link(proxy: dict, name: str, server: str, port: str) -> str | None:
+    """Clash trojan → trojan:// 链接"""
+    try:
+        password = proxy.get("password", "")
+        params = []
+        sni = proxy.get("sni", "") or proxy.get("servername", "")
+        if sni:
+            params.append(f"sni={sni}")
+        network = proxy.get("network", "ws")
+        if network != "ws":
+            params.append(f"type={network}")
+        if proxy.get("alpn"):
+            params.append(f"alpn={','.join(proxy['alpn'])}")
+        # ws-opts
+        ws_opts = proxy.get("ws-opts", {})
+        if network == "ws" and ws_opts:
+            if ws_opts.get("path"):
+                params.append(f"path={ws_opts['path']}")
+            if ws_opts.get("headers", {}).get("host"):
+                params.append(f"host={ws_opts['headers']['host']}")
+        # grpc-opts
+        grpc_opts = proxy.get("grpc-opts", {})
+        if network == "grpc" and grpc_opts:
+            if grpc_opts.get("grpc-service-name"):
+                params.append(f"serviceName={grpc_opts['grpc-service-name']}")
+
+        fragment = _quote(name)
+        query = "&".join(params)
+        return f"trojan://{password}@{server}:{port}?{query}#{fragment}"
+    except Exception:
+        return None
+
+
+def _clash_to_ss_link(proxy: dict, name: str, server: str, port: str) -> str | None:
+    """Clash ss → ss:// 链接"""
+    try:
+        cipher = proxy.get("cipher", "")
+        password = proxy.get("password", "")
+        userinfo = f"{cipher}:{password}"
+        userinfo_b64 = base64.b64encode(userinfo.encode()).decode().rstrip("=")
+        fragment = _quote(name)
+        return f"ss://{userinfo_b64}@{server}:{port}#{fragment}"
+    except Exception:
+        return None
+
+
+def _clash_to_hysteria2_link(proxy: dict, name: str, server: str, port: str) -> str | None:
+    """Clash hysteria2 → hysteria2:// 链接"""
+    try:
+        password = proxy.get("password", "") or proxy.get("auth", "")
+        params = []
+        sni = proxy.get("sni", "")
+        if sni:
+            params.append(f"sni={sni}")
+        if proxy.get("alpn"):
+            params.append(f"alpn={','.join(proxy['alpn'])}")
+        insecure = proxy.get("skip-cert-verify", False)
+        if insecure:
+            params.append("insecure=1")
+
+        fragment = _quote(name)
+        query = "&".join(params)
+        return f"hysteria2://{password}@{server}:{port}?{query}#{fragment}"
+    except Exception:
+        return None
+
+
+def _clash_to_socks5_link(proxy: dict, name: str, server: str, port: str) -> str | None:
+    """Clash socks5 → socks5:// 链接"""
+    try:
+        auth = ""
+        username = proxy.get("username", "")
+        password = proxy.get("password", "")
+        if username:
+            auth = f"{_quote(username)}:{_quote(password)}@"
+        fragment = _quote(name)
+        return f"socks5://{auth}{server}:{port}#{fragment}"
+    except Exception:
+        return None
+
+
+def _clash_to_http_link(proxy: dict, name: str, server: str, port: str, ptype: str) -> str | None:
+    """Clash http(s) → http(s):// 链接"""
+    try:
+        auth = ""
+        username = proxy.get("username", "")
+        password = proxy.get("password", "")
+        if username:
+            auth = f"{_quote(username)}:{_quote(password)}@"
+        fragment = _quote(name)
+        protocol = "https" if proxy.get("tls") or ptype == "https" else "http"
+        return f"{protocol}://{auth}{server}:{port}#{fragment}"
+    except Exception:
+        return None
+
+
+def _quote(s: str) -> str:
+    """URL 编码（用于 #fragment 和参数值）"""
+    from urllib.parse import quote
+    return quote(s, safe="")
 
 
 def _parse_vmess(line: str) -> ProxyInfo | None:
