@@ -49,7 +49,7 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
     # 加载配置
     _config = load_config(config_path)
 
-    # 配置日志（控制台 + 按天归档文件，保留7天）
+    # 配置日志（控制台 + 文件），防止 reload 重复添加 handler
     log_level = logging.DEBUG if _config.server.debug else logging.INFO
     log_fmt = logging.Formatter(
         fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -57,6 +57,8 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
     )
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
+    # 清除已有 handler 防止重复（uvicorn reload 时会重新导入）
+    root_logger.handlers.clear()
 
     # 控制台
     console_handler = logging.StreamHandler()
