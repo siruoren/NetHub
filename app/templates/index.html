@@ -17,7 +17,7 @@
         <div class="card stat-card text-white bg-success">
             <div class="card-body">
                 <h6 class="card-title"><i class="bi bi-check-circle"></i> 可用节点数</h6>
-                <h3 class="mb-0"><span id="availableCount">{{ stats.available }}</span> <small style="font-size:0.6em;opacity:0.7">/ <input id="maxProxiesInput" type="number" min="1" value="{{ max_proxies }}" style="width:3.5em;background:transparent;border:none;border-bottom:1px solid rgba(255,255,255,0.5);color:inherit;font-size:inherit;text-align:center;outline:none" onchange="updateMaxProxies(this.value)" onkeydown="if(event.key==='Enter')this.blur()"></small></h3>
+                <h3 class="mb-0"><span id="availableCount">{{ stats.available }}</span></h3>
             </div>
         </div>
     </div>
@@ -48,6 +48,9 @@
             <div class="card-header d-flex justify-content-between align-items-center py-2">
                 <span class="fw-bold"><i class="bi bi-gear"></i> 订阅源管理</span>
                 <div class="d-flex gap-1">
+                    <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="collapse" data-bs-target="#maxProxiesForm">
+                        <i class="bi bi-sliders"></i> 节点数限制 <span id="maxProxiesBadge" class="badge bg-light text-dark ms-1" style="font-size:0.65rem">{{ max_proxies }}</span>
+                    </button>
                     <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="collapse" data-bs-target="#checkUrlForm">
                         <i class="bi bi-bullseye"></i> 检测目标
                     </button>
@@ -57,6 +60,17 @@
                 </div>
             </div>
             <div class="card-body">
+                <!-- 节点数限制配置（可折叠） -->
+                <div class="collapse mb-3" id="maxProxiesForm">
+                    <div class="border rounded p-3 bg-light d-flex align-items-center gap-2">
+                        <label class="form-label mb-0 small flex-shrink-0">节点数限制</label>
+                        <input type="number" id="maxProxiesInput" class="form-control form-control-sm" min="1" value="{{ max_proxies }}" style="width:6em">
+                        <button class="btn btn-primary btn-sm flex-shrink-0" onclick="updateMaxProxies(document.getElementById('maxProxiesInput').value)">
+                            <i class="bi bi-check-lg"></i> 确定
+                        </button>
+                    </div>
+                    <small class="text-muted mt-1 d-block">超出限制时优先删除延迟最大、入库最老的节点</small>
+                </div>
                 <!-- 添加订阅表单（可折叠） -->
                 <div class="collapse mb-3" id="addSubForm">
                     <div class="border rounded p-3 bg-light">
@@ -559,8 +573,10 @@ setInterval(function() {
             if (el) el.textContent = stats.available;
         }
         if (cards[2]) cards[2].textContent = Math.round(stats.avg_latency_ms) + ' ms';
-        // 同步 max_proxies 输入框（如果未被聚焦编辑）
+        // 同步 max_proxies badge 和输入框
         if (stats.max_proxies) {
+            var badge = document.getElementById('maxProxiesBadge');
+            if (badge) badge.textContent = stats.max_proxies;
             var mpInput = document.getElementById('maxProxiesInput');
             if (mpInput && document.activeElement !== mpInput) mpInput.value = stats.max_proxies;
         }
@@ -706,7 +722,7 @@ async function triggerVerifySub(subId) {
 
 async function updateMaxProxies(val) {
     var n = parseInt(val);
-    if (!n || n < 1) { alert('最大条目数必须为正整数'); return; }
+    if (!n || n < 1) { alert('节点数限制必须为正整数'); return; }
     try {
         var res = await fetch('/api/config/max-proxies', {
             method: 'PUT',
@@ -716,6 +732,12 @@ async function updateMaxProxies(val) {
         var data = await res.json();
         if (data.error) { alert(data.error); return; }
         document.getElementById('maxProxiesInput').value = data.max_proxies;
+        // 同步按钮上的 badge
+        var badge = document.getElementById('maxProxiesBadge');
+        if (badge) badge.textContent = data.max_proxies;
+        // 折叠输入区域
+        var collapseEl = document.getElementById('maxProxiesForm');
+        if (collapseEl) bootstrap.Collapse.getInstance(collapseEl)?.hide();
         if (data.deleted > 0) {
             alert('已删除 ' + data.deleted + ' 个延迟最大/最老的节点');
             refreshPage();
