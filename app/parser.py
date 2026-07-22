@@ -79,30 +79,50 @@ def parse_subscription(content: str) -> list[ProxyInfo]:
         if line.startswith("#") or line.startswith("//"):
             continue
 
-        if line.startswith("vmess://"):
-            info = _parse_vmess(line)
-        elif line.startswith("vless://"):
-            info = _parse_vless(line)
-        elif line.startswith("trojan://"):
-            info = _parse_trojan(line)
-        elif line.startswith("ss://"):
-            info = _parse_ss(line)
-        elif line.startswith("hysteria2://") or line.startswith("hy2://"):
-            info = _parse_hysteria2(line)
-        elif line.startswith(("socks5://", "socks4://", "socks4a://")):
-            info = _parse_socks(line)
-        elif line.startswith(("http://", "https://")) and "#" in line:
-            # 仅当 http/https 链接带 #fragment 时视为代理节点（避免误判普通 URL）
-            info = _parse_http_proxy(line)
-        else:
-            info = None
+        info = _try_parse_line(line)
 
         if info:
             share_links.append(info)
-        elif any(line.startswith(p) for p in supported_prefixes):
-            logger.debug("忽略解析失败的行: %s", line[:80])
+        else:
+            logger.debug("忽略无法解析的行: %s", line[:80])
 
     return share_links
+
+
+def _try_parse_line(line: str) -> ProxyInfo | None:
+    """尝试解析单行，失败后去除行首特殊字符重试"""
+    info = _parse_line(line)
+    if info is not None:
+        return info
+
+    # 去除行首特殊字符（非字母数字的不可见/控制字符），然后重试
+    import re
+    cleaned = re.sub(r'^[^a-zA-Z0-9]+', '', line)
+    if cleaned != line and cleaned:
+        info = _parse_line(cleaned)
+        if info is not None:
+            return info
+
+    return None
+
+
+def _parse_line(line: str) -> ProxyInfo | None:
+    """解析单行分享链接"""
+    if line.startswith("vmess://"):
+        return _parse_vmess(line)
+    elif line.startswith("vless://"):
+        return _parse_vless(line)
+    elif line.startswith("trojan://"):
+        return _parse_trojan(line)
+    elif line.startswith("ss://"):
+        return _parse_ss(line)
+    elif line.startswith("hysteria2://") or line.startswith("hy2://"):
+        return _parse_hysteria2(line)
+    elif line.startswith(("socks5://", "socks4://", "socks4a://")):
+        return _parse_socks(line)
+    elif line.startswith(("http://", "https://")) and "#" in line:
+        return _parse_http_proxy(line)
+    return None
 
 
 def _is_clash_yaml(content: str) -> bool:
