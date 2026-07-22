@@ -470,19 +470,26 @@ class ProxyDatabase:
         rows = await cursor.fetchall()
         return [self._row_to_subscription(row) for row in rows]
 
-    async def update_total_count(self, sub_id: int, count: int) -> None:
-        """更新订阅源最新一次拉取的节点总数"""
+    async def batch_update_subscription_meta(self, sub_id: int,
+                                              total_count: int = None,
+                                              fetch_status: str = None,
+                                              reset_empty: bool = False) -> None:
+        """批量更新订阅源元信息（total_count / fetch_status / empty_days），单次 commit"""
+        updates = []
+        params = []
+        if total_count is not None:
+            updates.append("total_count = ?")
+            params.append(total_count)
+        if fetch_status is not None:
+            updates.append("fetch_status = ?")
+            params.append(fetch_status)
+        if reset_empty:
+            updates.append("empty_days = 0")
+        if not updates:
+            return
+        params.append(sub_id)
         await self._db.execute(
-            "UPDATE subscriptions SET total_count = ? WHERE id = ?",
-            (count, sub_id),
-        )
-        await self._db.commit()
-
-    async def update_fetch_status(self, sub_id: int, status: str) -> None:
-        """更新订阅源拉取状态: idle / updating / success / failed"""
-        await self._db.execute(
-            "UPDATE subscriptions SET fetch_status = ? WHERE id = ?",
-            (status, sub_id),
+            f"UPDATE subscriptions SET {', '.join(updates)} WHERE id = ?", params
         )
         await self._db.commit()
 
@@ -678,18 +685,22 @@ class ProxyDatabase:
         await self._db.commit()
         return cursor.rowcount > 0
 
-    async def update_instance_total_count(self, source_id: int, count: int) -> None:
-        """更新服务实例源最新一次获取的已连接节点数"""
+    async def batch_update_instance_meta(self, source_id: int,
+                                           total_count: int = None,
+                                           fetch_status: str = None) -> None:
+        """批量更新服务实例源元信息（total_count + fetch_status），单次 commit"""
+        updates = []
+        params = []
+        if total_count is not None:
+            updates.append("total_count = ?")
+            params.append(total_count)
+        if fetch_status is not None:
+            updates.append("fetch_status = ?")
+            params.append(fetch_status)
+        if not updates:
+            return
+        params.append(source_id)
         await self._db.execute(
-            "UPDATE instance_sources SET total_count = ? WHERE id = ?",
-            (count, source_id),
-        )
-        await self._db.commit()
-
-    async def update_instance_fetch_status(self, source_id: int, status: str) -> None:
-        """更新服务实例源拉取状态: idle / updating / success / failed"""
-        await self._db.execute(
-            "UPDATE instance_sources SET fetch_status = ? WHERE id = ?",
-            (status, source_id),
+            f"UPDATE instance_sources SET {', '.join(updates)} WHERE id = ?", params
         )
         await self._db.commit()

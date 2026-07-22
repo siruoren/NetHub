@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import asdict
 
 from fastapi import APIRouter, Request
 
@@ -36,9 +35,11 @@ async def index(request: Request):
     # 过滤包含 nethub 的订阅源（内部地址不在管理界面展示）
     subscriptions = [s for s in subscriptions if "nethub" not in s.url.lower()]
 
-    # 序列化
+    # 序列化（仅包含 JS 需要的字段，减少序列化开销）
     instance_sources_json = json.dumps(
-        [dict(asdict(s)) for s in instance_sources],
+        [{"id": s.id, "base_url": s.base_url, "username": s.username, "password": s.password,
+          "crontab": s.crontab, "latency_threshold": s.latency_threshold,
+          "max_concurrent": s.max_concurrent, "enabled": s.enabled} for s in instance_sources],
         ensure_ascii=False,
     )
 
@@ -48,7 +49,10 @@ async def index(request: Request):
         sub_available_counts[sub.id] = len(grouped.get(sub.id, []))
 
     subscriptions_json = json.dumps(
-        [dict(asdict(s), available_count=sub_available_counts.get(s.id, 0)) for s in subscriptions],
+        [{"id": s.id, "url": s.url, "crontab": s.crontab,
+          "latency_threshold": s.latency_threshold, "max_retries": s.max_retries,
+          "max_concurrent": s.max_concurrent, "enabled": s.enabled,
+          "available_count": sub_available_counts.get(s.id, 0)} for s in subscriptions],
         ensure_ascii=False,
     )
 

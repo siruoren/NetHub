@@ -274,7 +274,7 @@ async def update_subscription(sub_id: int, url: str = None, crontab: str = None,
         asyncio.create_task(scheduler._fetch_single_subscription(sub.id))
     else:
         # 禁用时重置拉取状态
-        await db.update_fetch_status(sub_id, "idle")
+        await db.batch_update_subscription_meta(sub_id, fetch_status="idle")
     return _subscription_to_dict(sub)
 
 
@@ -480,7 +480,7 @@ async def update_instance_source(source_id: int, base_url: str = None, username:
         # 启用时自动获取
         asyncio.create_task(scheduler._fetch_single_instance_source(source.id))
     else:
-        await db.update_instance_fetch_status(source_id, "idle")
+        await db.batch_update_instance_meta(source_id, fetch_status="idle")
     return _instance_source_to_dict(source)
 
 
