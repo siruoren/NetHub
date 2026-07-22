@@ -17,7 +17,7 @@
         <div class="card stat-card text-white bg-success">
             <div class="card-body">
                 <h6 class="card-title"><i class="bi bi-check-circle"></i> 可用节点数</h6>
-                <h3 class="mb-0"><span id="availableCount">{{ stats.available }}</span></h3>
+                <h3 class="mb-0"><span id="availableCount">{{ stats.available }}</span> <small style="font-size:0.5em;opacity:0.7">/ <span id="maxProxiesDisplay">{{ max_proxies }}</span></small></h3>
             </div>
         </div>
     </div>
@@ -49,7 +49,7 @@
                 <span class="fw-bold"><i class="bi bi-gear"></i> 订阅源管理</span>
                 <div class="d-flex gap-1">
                     <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="collapse" data-bs-target="#maxProxiesForm">
-                        <i class="bi bi-sliders"></i> 节点数限制 <span id="maxProxiesBadge" class="badge bg-light text-dark ms-1" style="font-size:0.65rem">{{ max_proxies }}</span>
+                        <i class="bi bi-sliders"></i> 节点数限制
                     </button>
                     <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="collapse" data-bs-target="#checkUrlForm">
                         <i class="bi bi-bullseye"></i> 检测目标
@@ -573,10 +573,10 @@ setInterval(function() {
             if (el) el.textContent = stats.available;
         }
         if (cards[2]) cards[2].textContent = Math.round(stats.avg_latency_ms) + ' ms';
-        // 同步 max_proxies badge 和输入框
+        // 同步 max_proxies 显示和输入框
         if (stats.max_proxies) {
-            var badge = document.getElementById('maxProxiesBadge');
-            if (badge) badge.textContent = stats.max_proxies;
+            var display = document.getElementById('maxProxiesDisplay');
+            if (display) display.textContent = stats.max_proxies;
             var mpInput = document.getElementById('maxProxiesInput');
             if (mpInput && document.activeElement !== mpInput) mpInput.value = stats.max_proxies;
         }
@@ -732,22 +732,23 @@ async function updateMaxProxies(val) {
         var data = await res.json();
         if (data.error) { alert(data.error); return; }
         document.getElementById('maxProxiesInput').value = data.max_proxies;
-        // 同步按钮上的 badge
-        var badge = document.getElementById('maxProxiesBadge');
-        if (badge) badge.textContent = data.max_proxies;
+        // 同步可用节点数卡片中的限制数显示
+        var display = document.getElementById('maxProxiesDisplay');
+        if (display) display.textContent = data.max_proxies;
         // 折叠输入区域
         var collapseEl = document.getElementById('maxProxiesForm');
         if (collapseEl) bootstrap.Collapse.getInstance(collapseEl)?.hide();
         if (data.deleted > 0) {
             alert('已删除 ' + data.deleted + ' 个延迟最大/最老的节点');
             refreshPage();
-        }
-        // 更新可用节点数
-        var el = document.getElementById('availableCount');
-        if (el) {
-            var statsRes = await fetch('/api/stats', {cache:'no-store'});
-            var stats = await statsRes.json();
-            el.textContent = stats.available;
+        } else {
+            // 更新可用节点数
+            var el = document.getElementById('availableCount');
+            if (el) {
+                var statsRes = await fetch('/api/stats', {cache:'no-store'});
+                var stats = await statsRes.json();
+                el.textContent = stats.available;
+            }
         }
     } catch(e) {
         alert('更新失败: ' + e.message);
@@ -829,6 +830,11 @@ function refreshPage() {
             if (el) el.textContent = stats.available;
         }
         if (cards[2]) cards[2].textContent = Math.round(stats.avg_latency_ms) + ' ms';
+        // 同步节点数限制显示
+        if (stats.max_proxies) {
+            var display = document.getElementById('maxProxiesDisplay');
+            if (display) display.textContent = stats.max_proxies;
+        }
 
         // 2. 更新协议分布图
         if (protocolChartInstance && stats.protocol_distribution) {
