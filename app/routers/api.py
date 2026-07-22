@@ -4,7 +4,7 @@ import asyncio
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app import get_checker, get_config, get_db, get_scheduler
@@ -154,13 +154,16 @@ async def get_stats():
     return stats
 
 
+class MaxProxiesBody(BaseModel):
+    max_proxies: int
+
+
 @router.put("/config/max-proxies")
-async def update_max_proxies(request):
+async def update_max_proxies(body: MaxProxiesBody):
     """更新最大可用条目数（保存到数据库）"""
-    body = await request.json()
-    max_proxies = body.get("max_proxies")
-    if max_proxies is None or not isinstance(max_proxies, int) or max_proxies < 1:
+    if body.max_proxies < 1:
         return {"error": "max_proxies 必须为正整数"}
+    max_proxies = body.max_proxies
     config = get_config()
     config.scheduler.max_proxies = max_proxies
     db = get_db()

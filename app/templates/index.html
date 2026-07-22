@@ -731,25 +731,10 @@ async function updateMaxProxies(val) {
         });
         var data = await res.json();
         if (data.error) { alert(data.error); return; }
-        document.getElementById('maxProxiesInput').value = data.max_proxies;
-        // 同步可用节点数卡片中的限制数显示
-        var display = document.getElementById('maxProxiesDisplay');
-        if (display) display.textContent = data.max_proxies;
-        // 折叠输入区域
-        var collapseEl = document.getElementById('maxProxiesForm');
-        if (collapseEl) bootstrap.Collapse.getInstance(collapseEl)?.hide();
         if (data.deleted > 0) {
             alert('已删除 ' + data.deleted + ' 个延迟最大/最老的节点');
-            refreshPage();
-        } else {
-            // 更新可用节点数
-            var el = document.getElementById('availableCount');
-            if (el) {
-                var statsRes = await fetch('/api/stats', {cache:'no-store'});
-                var stats = await statsRes.json();
-                el.textContent = stats.available;
-            }
         }
+        refreshPage();
     } catch(e) {
         alert('更新失败: ' + e.message);
     }
