@@ -144,11 +144,9 @@ class TaskScheduler:
             logger.info("订阅 #%d: 解析到 %d 个节点，并发检测中...", sub.id, len(proxies))
 
             # 自动移除该订阅下已有的 socks4 节点（不再支持）
-            existing_proxies = await self.db.get_proxies_by_subscription_id(sub_id)
-            socks4_ids = [p.id for p in existing_proxies if p.protocol == "socks4"]
-            if socks4_ids:
-                await self.db.batch_delete_proxies(socks4_ids)
-                logger.info("订阅 #%d: 自动移除 %d 个 socks4 节点", sub_id, len(socks4_ids))
+            socks4_count = await self.db.delete_proxies_by_subscription_id_and_protocol(sub_id, "socks4")
+            if socks4_count:
+                logger.info("订阅 #%d: 自动移除 %d 个 socks4 节点", sub_id, socks4_count)
 
             # 并发检测所有节点延迟
             sub_checker = ProxyChecker(
@@ -168,7 +166,7 @@ class TaskScheduler:
             threshold = sub.latency_threshold
             latency_updates = []   # [(proxy_id, latency), ...]
             delete_ids = []        # [proxy_id, ...]  已入库但延迟超标需删除的节点
-            added = 0
+            new_proxies = []       # [(ProxyInfo, latency, sub_id), ...] 待批量插入的新节点
             skipped = 0
 
             # 批量查询所有解析节点的 link 是否已存在于数据库，避免 N+1 查询
@@ -194,15 +192,14 @@ class TaskScheduler:
                             delete_ids.append(existing.id)
                         skipped += 1
                 else:
-                    # 新节点
+                    # 新节点 - 延迟达标才入库
                     if latency <= threshold:
-                        success = await self.db.insert_proxy(proxy, latency, sub_id)
-                        if success:
-                            added += 1
+                        new_proxies.append((proxy, latency, sub_id))
                     else:
                         skipped += 1
 
             # 批量写入数据库
+            added = await self.db.batch_insert_proxies(new_proxies)
             if latency_updates:
                 await self.db.batch_update_latency(latency_updates)
             if delete_ids:

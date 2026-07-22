@@ -494,6 +494,7 @@ const subsData = {{ subscriptions_json | safe }};
 const instData = {{ instance_sources_json | safe }};
 
 // 协议分布饼状图（显示数量和百分比）
+var protocolChartInstance = null;
 (function() {
     var ctx = document.getElementById('protocolChart');
     if (!ctx) return;
@@ -502,7 +503,7 @@ const instData = {{ instance_sources_json | safe }};
     var data = Object.values(dist);
     var total = data.reduce(function(a, b) { return a + b; }, 0);
     var colors = ['#0d6efd', '#198754', '#dc3545', '#ffc107', '#0dcaf0', '#6f42c1', '#d63384'];
-    new Chart(ctx, {
+    protocolChartInstance = new Chart(ctx, {
         type: 'doughnut',
         data: {
             labels: labels.map(function(l, i) {
@@ -532,19 +533,34 @@ const instData = {{ instance_sources_json | safe }};
             },
             animation: {
                 animateRotate: true,
-                duration: 1000
+                duration: 800
             }
         }
     });
 })();
 
-// 定时刷新统计（15秒）
+// 定时刷新统计（15秒）+ 动态更新协议分布图
 setInterval(function() {
     fetch('/api/stats', {cache:'no-store'}).then(r => r.json()).then(stats => {
         var cards = document.querySelectorAll('.stat-card h3');
         if (cards[0]) cards[0].textContent = stats.total;
         if (cards[1]) cards[1].textContent = stats.available;
         if (cards[2]) cards[2].textContent = Math.round(stats.avg_latency_ms) + ' ms';
+        // 动态更新协议分布图
+        if (protocolChartInstance && stats.protocol_distribution) {
+            var dist = stats.protocol_distribution;
+            var labels = Object.keys(dist);
+            var data = Object.values(dist);
+            var total = data.reduce(function(a, b) { return a + b; }, 0);
+            var colors = ['#0d6efd', '#198754', '#dc3545', '#ffc107', '#0dcaf0', '#6f42c1', '#d63384'];
+            protocolChartInstance.data.labels = labels.map(function(l, i) {
+                var pct = total > 0 ? (data[i] / total * 100).toFixed(1) : 0;
+                return l + ' (' + data[i] + ' / ' + pct + '%)';
+            });
+            protocolChartInstance.data.datasets[0].data = data;
+            protocolChartInstance.data.datasets[0].backgroundColor = colors.slice(0, labels.length);
+            protocolChartInstance.update('none');  // 无动画快速更新
+        }
     }).catch(() => {});
 }, 15000);
 
@@ -741,10 +757,39 @@ function refreshPage() {
             var newContent = doc.querySelector('#mainContent') || doc.body;
             var curContent = document.querySelector('#mainContent') || document.body;
             curContent.innerHTML = newContent.innerHTML;
-            // 重新初始化分页
+            // 重新初始化分页和 tooltip
             initPagination();
+            initTooltips();
+            // 重新提取 JS 数据（subsData/instData/协议分布）
+            updateJsData(doc);
         })
         .catch(() => { window.location.reload(); });
+}
+
+function initTooltips() {
+    // 清除旧 tooltip 实例
+    document.querySelectorAll('#mainContent [data-bs-toggle="tooltip"]').forEach(function(el) {
+        var oldTip = bootstrap.Tooltip.getInstance(el);
+        if (oldTip) oldTip.dispose();
+        new bootstrap.Tooltip(el);
+    });
+}
+
+function updateJsData(doc) {
+    // 从新 HTML 的 script 标签中提取 subsData / instData / 协议分布
+    var scripts = doc.querySelectorAll('script');
+    for (var i = 0; i < scripts.length; i++) {
+        var text = scripts[i].textContent;
+        // 更新订阅数据
+        var subMatch = text.match(/const subsData\s*=\s*(\[[\s\S]*?\]);/);
+        if (subMatch) { try { subsData = JSON.parse(subMatch[1]); } catch(e) {} }
+        // 更新实例源数据
+        var instMatch = text.match(/const instData\s*=\s*(\[[\s\S]*?\]);/);
+        if (instMatch) { try { instData = JSON.parse(instMatch[1]); } catch(e) {} }
+        // 更新协议分布（不重建图表，仅下次刷新时使用）
+        var distMatch = text.match(/var dist\s*=\s*(\{[\s\S]*?\});/);
+        if (distMatch) { try { lastProtocolDist = JSON.parse(distMatch[1]); } catch(e) {} }
+    }
 }
 
 // ---- 分页逻辑 ----
@@ -971,9 +1016,7 @@ async function importSubs(id) {
     } catch (e) { alert('请求失败: ' + e.message); }
 }
 
-// 初始化 Bootstrap Tooltip
-document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function(el) {
-    new bootstrap.Tooltip(el);
-});
+// 初始化 Bootstrap Tooltip（页面首次加载）
+initTooltips();
 </script>
 {% endblock %}
