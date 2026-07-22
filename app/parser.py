@@ -75,6 +75,10 @@ def parse_subscription(content: str) -> list[ProxyInfo]:
         if not line:
             continue
 
+        # 跳过注释行和常见非协议行
+        if line.startswith("#") or line.startswith("//"):
+            continue
+
         if line.startswith("vmess://"):
             info = _parse_vmess(line)
         elif line.startswith("vless://"):
@@ -95,6 +99,8 @@ def parse_subscription(content: str) -> list[ProxyInfo]:
 
         if info:
             share_links.append(info)
+        elif any(line.startswith(p) for p in supported_prefixes):
+            logger.debug("忽略解析失败的行: %s", line[:80])
 
     return share_links
 
