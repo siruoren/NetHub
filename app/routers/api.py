@@ -262,9 +262,12 @@ async def auto_add_subscription(req: AutoSubRequest):
 
 
 @router.put("/subscriptions/{sub_id}")
-async def update_subscription(sub_id: int, url: str = None, crontab: str = None,
-                               latency_threshold: float = None, max_retries: int = None,
-                               max_concurrent: int = None, enabled: bool = None):
+async def update_subscription(sub_id: int, url: Optional[str] = None,
+                               crontab: Optional[str] = None,
+                               latency_threshold: Optional[float] = None,
+                               max_retries: Optional[int] = None,
+                               max_concurrent: Optional[int] = None,
+                               enabled: Optional[bool] = None):
     """更新订阅源"""
     from fastapi import HTTPException
     db = get_db()
@@ -464,10 +467,13 @@ async def add_instance_source(req: InstanceSourceCreate):
 
 
 @router.put("/instance-sources/{source_id}")
-async def update_instance_source(source_id: int, base_url: str = None, username: str = None,
-                                  password: str = None, crontab: str = None,
-                                  latency_threshold: float = None, max_concurrent: int = None,
-                                  enabled: bool = None):
+async def update_instance_source(source_id: int, base_url: Optional[str] = None,
+                                  username: Optional[str] = None,
+                                  password: Optional[str] = None,
+                                  crontab: Optional[str] = None,
+                                  latency_threshold: Optional[float] = None,
+                                  max_concurrent: Optional[int] = None,
+                                  enabled: Optional[bool] = None):
     """更新服务实例源"""
     from fastapi import HTTPException
     db = get_db()

@@ -112,22 +112,6 @@ class ProxyChecker:
         self.check_mode = check_mode
         self.kernel_path = self._resolve_kernel_path(kernel_path)
         self.check_retries = max(check_retries, 0)
-        self._session: aiohttp.ClientSession | None = None  # 共享 HTTP session
-
-    async def _get_session(self) -> aiohttp.ClientSession:
-        """获取或创建共享 HTTP session（懒初始化，生命周期与 checker 相同）"""
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
-                connector=aiohttp.TCPConnector(limit=0, force_close=False),
-                timeout=aiohttp.ClientTimeout(total=self.timeout),
-            )
-        return self._session
-
-    async def close_session(self) -> None:
-        """关闭共享 HTTP session"""
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
 
     @staticmethod
     def _resolve_kernel_path(kernel_path: str) -> str:
@@ -271,31 +255,33 @@ class ProxyChecker:
 
         轮询多个检测 URL，使用 GET 请求并验证响应内容；
         确保节点能真正访问目标页面，排除劫持页面和认证门户
-        使用共享 session 减少连接创建开销
+        每次检测创建独立连接，结束后销毁
         """
         urls = self.check_urls if self.check_urls else DEFAULT_CHECK_URLS
         proxy_url = f"http://127.0.0.1:{port}"
-        session = await self._get_session()
 
-        for check_url in urls:
-            start = time.monotonic()
-            try:
-                async with session.get(
-                    check_url,
-                    proxy=proxy_url,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout),
-                    allow_redirects=True,
-                    ssl=False,
-                ) as resp:
-                    # 读取响应体（限制最大 4KB 防止下载大文件）
-                    body = await resp.content.read(4096)
-                    elapsed = (time.monotonic() - start) * 1000
+        async with aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(force_close=True),
+            timeout=aiohttp.ClientTimeout(total=self.timeout),
+        ) as session:
+            for check_url in urls:
+                start = time.monotonic()
+                try:
+                    async with session.get(
+                        check_url,
+                        proxy=proxy_url,
+                        allow_redirects=True,
+                        ssl=False,
+                    ) as resp:
+                        # 读取响应体（限制最大 4KB 防止下载大文件）
+                        body = await resp.content.read(4096)
+                        elapsed = (time.monotonic() - start) * 1000
 
-                    if _validate_check_response(check_url, resp.status, body):
-                        return round(elapsed, 1)
-                    # 验证不通过，尝试下一个 URL
-            except Exception:
-                continue
+                        if _validate_check_response(check_url, resp.status, body):
+                            return round(elapsed, 1)
+                        # 验证不通过，尝试下一个 URL
+                except Exception:
+                    continue
         return None
 
     @staticmethod

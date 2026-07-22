@@ -6,6 +6,7 @@ from __future__ import annotations
 支持 Clash YAML 格式订阅解析
 """
 
+import asyncio
 import base64
 import difflib
 import json
@@ -20,12 +21,21 @@ from app.models import ProxyInfo
 logger = logging.getLogger(__name__)
 
 
-async def fetch_subscription(url: str, timeout: float = 15.0) -> str:
+async def fetch_subscription(url: str, timeout: float = 60.0) -> str:
     """异步拉取订阅 URL 内容"""
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
-            resp.raise_for_status()
-            return await resp.text()
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=timeout),
+        ) as session:
+            async with session.get(url) as resp:
+                resp.raise_for_status()
+                return await resp.text()
+    except (asyncio.TimeoutError, TimeoutError) as e:
+        logger.warning("拉取订阅超时 (%ss): %s", timeout, url[:80])
+        raise
+    except aiohttp.ClientError as e:
+        logger.warning("拉取订阅失败: %s - %s", url[:80], e)
+        raise
 
 
 def parse_subscription(content: str) -> list[ProxyInfo]:

@@ -139,8 +139,6 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
 
     @app.on_event("shutdown")
     async def shutdown():
-        if _checker:
-            await _checker.close_session()
         if _scheduler:
             _scheduler.shutdown()
         if _db:
