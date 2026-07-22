@@ -483,7 +483,7 @@
 {% endblock %}
 
 {% block extra_head %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" async></script>
 {% endblock %}
 
 {% block extra_script %}
@@ -495,9 +495,9 @@ const instData = {{ instance_sources_json | safe }};
 
 // 协议分布饼状图（显示数量和百分比）
 var protocolChartInstance = null;
-(function() {
+function initProtocolChart() {
     var ctx = document.getElementById('protocolChart');
-    if (!ctx) return;
+    if (!ctx || typeof Chart === 'undefined') return;
     var dist = {{ stats.protocol_distribution | tojson }};
     var labels = Object.keys(dist);
     var data = Object.values(dist);
@@ -537,7 +537,17 @@ var protocolChartInstance = null;
             }
         }
     });
-})();
+}
+// Chart.js 可能异步加载，等待就绪后初始化
+if (typeof Chart !== 'undefined') {
+    initProtocolChart();
+} else {
+    // 轮询等待 Chart.js 加载（最多3秒）
+    var chartWait = setInterval(function() {
+        if (typeof Chart !== 'undefined') { clearInterval(chartWait); initProtocolChart(); }
+    }, 100);
+    setTimeout(function() { clearInterval(chartWait); }, 3000);
+}
 
 // 定时刷新统计（15秒）+ 动态更新协议分布图
 setInterval(function() {
@@ -747,49 +757,119 @@ async function importConfig(input) {
 }
 
 function refreshPage() {
-    // 使用 no-store 避免缓存，直接替换整个页面
-    fetch(window.location.href, {cache:'no-store'})
-        .then(r => r.text())
-        .then(html => {
-            var parser = new DOMParser();
-            var doc = parser.parseFromString(html, 'text/html');
-            // 仅替换主内容区域
-            var newContent = doc.querySelector('#mainContent') || doc.body;
-            var curContent = document.querySelector('#mainContent') || document.body;
-            curContent.innerHTML = newContent.innerHTML;
-            // 重新初始化分页和 tooltip
-            initPagination();
-            initTooltips();
-            // 重新提取 JS 数据（subsData/instData/协议分布）
-            updateJsData(doc);
-        })
-        .catch(() => { window.location.reload(); });
-}
+    // 使用 JSON API 局部刷新，避免整页 HTML 解析开销
+    Promise.all([
+        fetch('/api/stats', {cache:'no-store'}).then(r => r.json()),
+        fetch('/api/proxies/grouped', {cache:'no-store'}).then(r => r.json()),
+        fetch('/api/subscriptions', {cache:'no-store'}).then(r => r.json()),
+    ]).then(function([stats, groupedData, subsResult]) {
+        // 1. 更新统计数字
+        var cards = document.querySelectorAll('.stat-card h3');
+        if (cards[0]) cards[0].textContent = stats.total;
+        if (cards[1]) cards[1].textContent = stats.available;
+        if (cards[2]) cards[2].textContent = Math.round(stats.avg_latency_ms) + ' ms';
 
-function initTooltips() {
-    // 清除旧 tooltip 实例
-    document.querySelectorAll('#mainContent [data-bs-toggle="tooltip"]').forEach(function(el) {
-        var oldTip = bootstrap.Tooltip.getInstance(el);
-        if (oldTip) oldTip.dispose();
-        new bootstrap.Tooltip(el);
-    });
-}
+        // 2. 更新协议分布图
+        if (protocolChartInstance && stats.protocol_distribution) {
+            var dist = stats.protocol_distribution;
+            var labels = Object.keys(dist);
+            var data = Object.values(dist);
+            var total = data.reduce(function(a, b) { return a + b; }, 0);
+            var colors = ['#0d6efd', '#198754', '#dc3545', '#ffc107', '#0dcaf0', '#6f42c1', '#d63384'];
+            protocolChartInstance.data.labels = labels.map(function(l, i) {
+                var pct = total > 0 ? (data[i] / total * 100).toFixed(1) : 0;
+                return l + ' (' + data[i] + ' / ' + pct + '%)';
+            });
+            protocolChartInstance.data.datasets[0].data = data;
+            protocolChartInstance.data.datasets[0].backgroundColor = colors.slice(0, labels.length);
+            protocolChartInstance.update('none');
+        }
 
-function updateJsData(doc) {
-    // 从新 HTML 的 script 标签中提取 subsData / instData / 协议分布
-    var scripts = doc.querySelectorAll('script');
-    for (var i = 0; i < scripts.length; i++) {
-        var text = scripts[i].textContent;
-        // 更新订阅数据
-        var subMatch = text.match(/const subsData\s*=\s*(\[[\s\S]*?\]);/);
-        if (subMatch) { try { subsData = JSON.parse(subMatch[1]); } catch(e) {} }
-        // 更新实例源数据
-        var instMatch = text.match(/const instData\s*=\s*(\[[\s\S]*?\]);/);
-        if (instMatch) { try { instData = JSON.parse(instMatch[1]); } catch(e) {} }
-        // 更新协议分布（不重建图表，仅下次刷新时使用）
-        var distMatch = text.match(/var dist\s*=\s*(\{[\s\S]*?\});/);
-        if (distMatch) { try { lastProtocolDist = JSON.parse(distMatch[1]); } catch(e) {} }
-    }
+        // 3. 更新 subsData（用于编辑弹窗）
+        subsData = subsResult.subscriptions;
+
+        // 4. 更新订阅源表格中的可用数和状态
+        var grouped = groupedData.grouped;
+        subsResult.subscriptions.forEach(function(sub) {
+            var availableCount = (grouped[String(sub.id)] || []).length;
+            // 更新可用数 badge（通过行中的 badge bg-info）
+            var rows = document.querySelectorAll('#mainContent table tbody tr');
+            rows.forEach(function(row) {
+                var idCell = row.querySelector('td:first-child');
+                if (idCell && idCell.textContent.trim() == String(sub.id)) {
+                    var badges = row.querySelectorAll('.badge');
+                    if (badges.length >= 2) {
+                        badges[0].textContent = sub.total_count;   // 总数
+                        badges[1].textContent = availableCount;     // 可用数
+                    }
+                    // 更新状态 badge
+                    var statusCell = row.querySelectorAll('td')[6];
+                    if (statusCell) {
+                        var statusBadge = statusCell.querySelector('.badge');
+                        if (statusBadge) {
+                            var statusText = sub.fetch_status === 'success' ? '成功' :
+                                             sub.fetch_status === 'updating' ? '更新中' :
+                                             sub.fetch_status === 'failed' ? '失败' : '待更新';
+                            var statusClass = sub.fetch_status === 'success' ? 'bg-success' :
+                                              sub.fetch_status === 'updating' ? 'bg-warning text-dark' :
+                                              sub.fetch_status === 'failed' ? 'bg-danger' : 'bg-secondary';
+                            statusBadge.className = 'badge ' + statusClass;
+                            statusBadge.textContent = statusText;
+                        }
+                    }
+                }
+            });
+        });
+
+        // 5. 更新节点表格内容
+        var container = document.querySelector('#mainContent .tab-content');
+        if (!container) return;
+        var currentActiveTab = document.querySelector('#subTab .nav-link.active');
+        var currentSubId = currentActiveTab ? currentActiveTab.dataset.subId : null;
+
+        // 重建 Tab 和节点内容
+        var subsWithProxies = subsResult.subscriptions.filter(function(sub) {
+            return (grouped[String(sub.id)] || []).length > 0;
+        });
+
+        // 更新 Tab 标签上的可用数 badge
+        subsWithProxies.forEach(function(sub) {
+            var tabBtn = document.querySelector('#tab-' + sub.id);
+            if (tabBtn) {
+                var badge = tabBtn.querySelector('.badge');
+                if (badge) badge.textContent = (grouped[String(sub.id)] || []).length;
+            }
+        });
+
+        // 更新当前激活 Tab 的节点表格
+        if (currentSubId) {
+            var proxies = grouped[String(currentSubId)] || [];
+            var tbody = document.querySelector('#tbl-' + currentSubId + ' tbody');
+            if (tbody) {
+                tbody.innerHTML = proxies.map(function(p, i) {
+                    var latencyClass = p.latency_ms < 500 ? 'latency-good' :
+                                       p.latency_ms < 1500 ? 'latency-medium' : 'latency-bad';
+                    var nameShort = p.name.length > 30 ? p.name.substring(0, 30) + '...' : p.name;
+                    var timeShort = p.created_at ? p.created_at.substring(0, 19) : '-';
+                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-sub="' + currentSubId + '">' +
+                        '<td>' + (i + 1) + '</td>' +
+                        '<td title="' + p.name + '">' + nameShort + '</td>' +
+                        '<td><span class="badge bg-secondary">' + p.protocol + '</span></td>' +
+                        '<td><code>' + p.address + '</code></td>' +
+                        '<td>' + p.port + '</td>' +
+                        '<td><span class="' + latencyClass + '">' + Math.round(p.latency_ms) + ' ms</span></td>' +
+                        '<td><small>' + timeShort + '</small></td>' +
+                        '<td><button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem" onclick="deleteProxy(' + p.id + ')">删除</button></td>' +
+                        '</tr>';
+                }).join('');
+                if (!proxies.length) {
+                    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">暂无可用节点</td></tr>';
+                }
+                pageState[currentSubId] = 1;
+                applyPagination(currentSubId);
+            }
+        }
+    }).catch(function() { window.location.reload(); });
 }
 
 // ---- 分页逻辑 ----
@@ -1016,7 +1096,9 @@ async function importSubs(id) {
     } catch (e) { alert('请求失败: ' + e.message); }
 }
 
-// 初始化 Bootstrap Tooltip（页面首次加载）
-initTooltips();
+// 初始化 Bootstrap Tooltip（页面首次加载，等待 DOM + Bootstrap 就绪）
+document.addEventListener('DOMContentLoaded', function() {
+    initTooltips();
+});
 </script>
 {% endblock %}

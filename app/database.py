@@ -183,27 +183,26 @@ class ProxyDatabase:
         """批量插入新节点，link 唯一约束，重复则忽略。返回实际插入数量
 
         proxies: [(ProxyInfo, latency_ms, subscription_id), ...]
-        单次 commit，避免逐条提交的性能开销
+        使用 INSERT OR IGNORE + executemany，单次 commit
         """
         if not proxies:
             return 0
         now = datetime.now(timezone(timedelta(hours=8))).isoformat()
-        inserted = 0
-        for proxy, latency, sub_id in proxies:
-            try:
-                cursor = await self._db.execute(
-                    """INSERT OR IGNORE INTO proxies
-                       (protocol, name, address, port, link, latency_ms, fail_count, subscription_id,
-                        last_check_time, last_success_time, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)""",
-                    (proxy.protocol, proxy.name, proxy.address, proxy.port, proxy.link,
-                     latency, sub_id, now, now if latency >= 0 else "", now),
-                )
-                if cursor.rowcount > 0:
-                    inserted += 1
-            except aiosqlite.IntegrityError:
-                pass
+        rows = [
+            (proxy.protocol, proxy.name, proxy.address, proxy.port, proxy.link,
+             latency, 0, sub_id, now, now if latency >= 0 else "", now)
+            for proxy, latency, sub_id in proxies
+        ]
+        cursor = await self._db.executemany(
+            """INSERT OR IGNORE INTO proxies
+               (protocol, name, address, port, link, latency_ms, fail_count, subscription_id,
+                last_check_time, last_success_time, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
         await self._db.commit()
+        # executemany 返回的总 rowcount 是所有语句的 rowcount之和
+        inserted = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
         if inserted > 0:
             self._invalidate_stats()
         return inserted
@@ -438,12 +437,11 @@ class ProxyDatabase:
         return cursor.rowcount > 0
 
     async def delete_subscription(self, sub_id: int) -> bool:
-        """删除订阅源及其下所有节点"""
-        # 先删除该订阅下的所有节点
-        await self.delete_proxies_by_subscription_id(sub_id)
+        """删除订阅源及其下所有节点（单次 commit）"""
+        await self._db.execute("DELETE FROM proxies WHERE subscription_id = ?", (sub_id,))
         cursor = await self._db.execute("DELETE FROM subscriptions WHERE id = ?", (sub_id,))
         await self._db.commit()
-        self._invalidate_stats()  # subscriptions 表变化影响 total 统计
+        self._invalidate_stats()
         return cursor.rowcount > 0
 
     async def increment_empty_days(self, sub_id: int) -> None:
@@ -494,9 +492,13 @@ class ProxyDatabase:
         await self._db.commit()
 
     async def get_proxies_grouped_by_subscription(self, max_latency: float) -> dict[int, list[ProxyDBRecord]]:
-        """获取按订阅源 ID 分组的可用节点，按入库时间正序"""
+        """获取按订阅源 ID 分组的可用节点，按入库时间正序
+
+        只查询模板需要的列，减少数据传输和对象创建开销
+        """
         cursor = await self._db.execute(
-            """SELECT * FROM proxies
+            """SELECT id, protocol, name, address, port, link, latency_ms, subscription_id, created_at
+               FROM proxies
                WHERE latency_ms > 0 AND latency_ms <= ? AND fail_count = 0
                ORDER BY subscription_id ASC, created_at ASC""",
             (max_latency,),
@@ -504,7 +506,20 @@ class ProxyDatabase:
         rows = await cursor.fetchall()
         grouped = {}
         for row in rows:
-            record = self._row_to_record(row)
+            record = ProxyDBRecord(
+                id=row["id"],
+                protocol=row["protocol"],
+                name=row["name"],
+                address=row["address"],
+                port=row["port"],
+                link=row["link"],
+                latency_ms=row["latency_ms"],
+                fail_count=0,
+                subscription_id=row["subscription_id"],
+                last_check_time="",
+                last_success_time="",
+                created_at=row["created_at"],
+            )
             grouped.setdefault(record.subscription_id, []).append(record)
         return grouped
 

@@ -315,9 +315,7 @@ def _proxy_to_dict(proxy) -> dict:
         "latency_ms": proxy.latency_ms,
         "fail_count": proxy.fail_count,
         "subscription_id": proxy.subscription_id,
-        "last_check_time": proxy.last_check_time,
-        "last_success_time": proxy.last_success_time,
-        "status": proxy.status,
+        "created_at": proxy.created_at,
     }
 
 

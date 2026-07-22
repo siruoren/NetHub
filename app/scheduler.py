@@ -246,31 +246,43 @@ class TaskScheduler:
             self._fetching = False
 
     async def verify_stored_proxies(self) -> None:
-        """验证已存节点可用性（并发检测 + 批量数据库写入）"""
+        """验证已存节点可用性（按订阅源分组批量检测 + 批量数据库写入）
+
+        使用 grouped 查询替代全量查询，利用复合索引加速
+        """
         if self._verifying:
             logger.info("上一次验证任务尚未完成，跳过本次")
             return
 
         self._verifying = True
         try:
-            proxies = await self.db.get_all_proxies()
-            if not proxies:
-                logger.info("数据库中没有节点，跳过验证")
+            grouped = await self.db.get_proxies_grouped_by_subscription(
+                self.config.check.latency_threshold * 2  # 验证时阈值放宽2倍
+            )
+            if not grouped:
+                logger.info("数据库中没有可用节点，跳过验证")
                 return
 
-            logger.info("开始验证 %d 个节点...", len(proxies))
-            links = [p.link for p in proxies]
-            results = await self.checker.check_batch(links)
+            total = sum(len(ps) for ps in grouped.values())
+            logger.info("开始验证 %d 个节点（%d 个订阅源）...", total, len(grouped))
+
+            all_links = []
+            link_to_proxy = {}  # link → ProxyDBRecord
+            for sub_id, proxies in grouped.items():
+                for proxy in proxies:
+                    all_links.append(proxy.link)
+                    link_to_proxy[proxy.link] = proxy
+
+            results = await self.checker.check_batch(all_links)
 
             latency_updates = []
             delete_ids = []
 
-            for proxy in proxies:
-                latency = results.get(proxy.link)
+            for link, proxy in link_to_proxy.items():
+                latency = results.get(link)
                 if latency is not None:
                     latency_updates.append((proxy.id, latency))
                 else:
-                    # 检测失败直接删除
                     delete_ids.append(proxy.id)
 
             # 批量写入
