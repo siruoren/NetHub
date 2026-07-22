@@ -69,6 +69,7 @@ async def index(request: Request):
             "instance_sources_json": instance_sources_json,
             "grouped": grouped,
             "latency_threshold": config.check.latency_threshold,
+            "max_proxies": config.scheduler.max_proxies,
             "last_fetch_time": scheduler.last_fetch_time,
             "last_verify_time": scheduler.last_verify_time,
         },

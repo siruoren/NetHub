@@ -265,6 +265,25 @@ class ProxyDatabase:
         self._invalidate_stats()
         return cursor.rowcount
 
+    async def enforce_max_proxies(self, max_count: int) -> int:
+        """强制执行最大条目数限制，超出则按入库时间删除最老的节点，返回删除数量"""
+        if max_count <= 0:
+            return 0
+        cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM proxies")
+        total = (await cursor.fetchone())["cnt"]
+        if total <= max_count:
+            return 0
+        excess = total - max_count
+        cursor = await self._db.execute(
+            """DELETE FROM proxies WHERE id IN (
+                SELECT id FROM proxies ORDER BY created_at ASC LIMIT ?
+            )""",
+            (excess,),
+        )
+        await self._db.commit()
+        self._invalidate_stats()
+        return cursor.rowcount
+
     async def delete_proxies_by_subscription_id(self, subscription_id: int) -> int:
         """删除指定订阅源 ID 下的所有节点，返回删除数量"""
         cursor = await self._db.execute(

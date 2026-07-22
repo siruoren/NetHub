@@ -207,6 +207,13 @@ class TaskScheduler:
             logger.info("订阅 #%d 拉取完成: 新增 %d, 更新延迟 %d, 跳过 %d, 总解析 %d",
                         sub.id, added, len(latency_updates), skipped, len(proxies))
 
+            # 强制执行最大条目数限制
+            max_proxies = self.config.scheduler.max_proxies
+            if max_proxies > 0:
+                deleted = await self.db.enforce_max_proxies(max_proxies)
+                if deleted:
+                    logger.info("超出最大条目数 %d，已删除 %d 个最老的节点", max_proxies, deleted)
+
             # 拉取完成后，同时验证该订阅下所有已入库节点
             await self.verify_subscription_proxies(sub_id)
 

@@ -17,7 +17,7 @@
         <div class="card stat-card text-white bg-success">
             <div class="card-body">
                 <h6 class="card-title"><i class="bi bi-check-circle"></i> 可用节点数</h6>
-                <h3 class="mb-0">{{ stats.available }}</h3>
+                <h3 class="mb-0"><span id="availableCount">{{ stats.available }}</span> <small style="font-size:0.6em;opacity:0.7">/ {{ max_proxies }}</small></h3>
             </div>
         </div>
     </div>
@@ -554,7 +554,10 @@ setInterval(function() {
     fetch('/api/stats', {cache:'no-store'}).then(r => r.json()).then(stats => {
         var cards = document.querySelectorAll('.stat-card h3');
         if (cards[0]) cards[0].textContent = stats.total;
-        if (cards[1]) cards[1].textContent = stats.available;
+        if (cards[1]) {
+            var el = document.getElementById('availableCount');
+            if (el) el.textContent = stats.available;
+        }
         if (cards[2]) cards[2].textContent = Math.round(stats.avg_latency_ms) + ' ms';
         // 动态更新协议分布图
         if (protocolChartInstance && stats.protocol_distribution) {
@@ -766,7 +769,10 @@ function refreshPage() {
         // 1. 更新统计数字
         var cards = document.querySelectorAll('.stat-card h3');
         if (cards[0]) cards[0].textContent = stats.total;
-        if (cards[1]) cards[1].textContent = stats.available;
+        if (cards[1]) {
+            var el = document.getElementById('availableCount');
+            if (el) el.textContent = stats.available;
+        }
         if (cards[2]) cards[2].textContent = Math.round(stats.avg_latency_ms) + ' ms';
 
         // 2. 更新协议分布图
