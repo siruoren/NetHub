@@ -8,34 +8,51 @@ All notable changes to this project will be documented in this file.
 
 - **Clash YAML 格式支持** - 新增 `_is_clash_yaml` 检测、`_parse_clash_yaml` 解析和 `_clash_proxy_to_info` 转换，支持 vmess/vless/trojan/ss/hysteria2/socks5/http 7 种代理类型的 Clash YAML 订阅解析
 - **解析错误行跳过** - 订阅源解析跳过 `#` 和 `//` 开头的注释行，解析失败的行在 debug 级别记录日志，不中断整体解析流程
-- **行首特殊字符清理重试** - 解析每行时先尝试原行解析，失败后用 `re.sub(r'^[^a-zA-Z0-9]+', '', line)` 剻除 BOM、emoji、控制字符、空格、制表符、标点等行首特殊字符后重试
+- **行首特殊字符清理重试** - 解析每行时先尝试原行解析，失败后用 `re.sub(r'^[^a-zA-Z0-9]+', '', line)` 去除 BOM、emoji、控制字符、空格、制表符、标点等行首特殊字符后重试
+
+### 节点数限制
+
+- **节点数限制功能** - 新增 `max_proxies` 配置项（默认 500），数据库超出此数量时优先删除延迟最大、入库最老的节点（`ORDER BY latency_ms DESC, created_at ASC`）
+- **数据库持久化** - `max_proxies` 保存到 `settings` 表（key-value），应用启动时从数据库加载覆盖配置文件默认值
+- **配置导出/导入包含** - 导出配置中包含 `max_proxies`，导入时恢复到数据库和内存
+- **页面节点数限制按钮** - 订阅源管理标题栏新增「节点数限制」按钮（位于检测目标左侧），点击展开输入框+确定按钮，保存后自动折叠并刷新页面
+- **可用节点数卡片** - 显示格式为 `可用节点数/节点限制数`（如 321/500），15 秒定时刷新同步更新
 
 ### 性能优化（后台）
 
 - **SQLite WAL 模式 + PRAGMA 优化** - `journal_mode=WAL`、`synchronous=NORMAL`、`cache_size=-8000`（8MB）、`temp_store=MEMORY`，显著提升并发读写性能
 - **复合索引** - 新增 `idx_proxies_sub_created(subscription_id, created_at)` 和 `idx_proxies_available(latency_ms, fail_count, subscription_id)`，加速分组查询和可用节点筛选
-- **统计信息内存缓存** - `get_stats()` 使用 `_stats_cache` + `_stats_dirty` 脚标记机制，数据不变时直接返回缓存，避免重复 SQL 查询；所有修改数据的方法末尾调用 `_invalidate_stats()`
-- **`get_stats` 合并查询** - 4 次 SQL 查询（subscriptions 计数 + proxies 可用数 + 平均延迟 + 协议分布）合并为 2 次（subscriptions 计数 + proxies `GROUP BY protocol` 一次获得可用数/加权平均延迟/协议分布）
-- **共享 aiohttp session** - `ProxyChecker` 持有共享 `_session`，`_http_request_via_proxy` 复用而非每次检测创建新 `TCPConnector` + `ClientSession`；shutdown 时关闭 session
-- **共享 checker** - scheduler 不再每次拉取/验证创建新 `ProxyChecker`，直接使用 `self.checker` 复用 HTTP session 和并发控制
-- **批量插入节点** - `batch_insert_proxies` 使用 `executemany` + `INSERT OR IGNORE` 替代逐条 `execute` + `try/except IntegrityError`，单次 commit
+- **统计信息内存缓存** - `get_stats()` 使用 `_stats_cache` + `_stats_dirty` 脏标记机制，数据不变时直接返回缓存，避免重复 SQL 查询；所有修改数据的方法末尾调用 `_invalidate_stats()`
+- **`get_stats` 合并查询** - 4 次 SQL 查询合并为 2 次（subscriptions 计数 + proxies `GROUP BY protocol` 一次获得可用数/加权平均延迟/协议分布）
+- **独立 HTTP 连接** - `ProxyChecker` 每次检测创建独立 `aiohttp.ClientSession`（`force_close=True`），检测结束后立即销毁，避免连接池残留到已销毁的内核端口
+- **共享 checker** - scheduler 不再每次拉取/验证创建新 `ProxyChecker`，直接使用 `self.checker` 复用并发控制
+- **逐条插入实时刷新** - `batch_insert_proxies` 改为逐条 `execute` + `commit` + `_invalidate_stats`，前端可用节点数实时刷新
 - **socks4 过滤用 SQL 直接删除** - 新增 `delete_proxies_by_subscription_id_and_protocol`，不再全量获取再遍历过滤
 - **N+1 查询优化** - `_fetch_single_subscription` 中用 `get_proxies_by_links`（`IN` 查询）替代逐个 `get_proxy_by_link`
 - **`delete_subscription` 单次 commit** - 删除订阅源及其下所有节点合并为同一事务中的 2 条 DELETE，1 次 commit
-- **合并元信息更新** - 新增 `batch_update_subscription_meta`（合并 total_count + fetch_status + reset_empty）和 `batch_update_instance_meta`（合并 total_count + fetch_status），单次 commit
+- **合并元信息更新** - 新增 `batch_update_subscription_meta` 和 `batch_update_instance_meta`，单次 commit
 - **`verify_stored_proxies` 分组查询** - 从 `get_all_proxies()` 全表扫描改为 `get_proxies_grouped_by_subscription`（利用复合索引），验证阈值放宽 2 倍避免误删
-- **`get_proxies_grouped_by_subscription` 精简列** - `SELECT *` 12 列改为 `SELECT` 9 列（仅查模板需要的字段），减少数据传输和对象创建开销
+- **`get_proxies_grouped_by_subscription` 精简列** - `SELECT *` 12 列改为 `SELECT` 9 列，减少数据传输和对象创建开销
 - **Jinja2 模板缓存** - `cache_size` 从 0 改为 128，模板编译结果只生成一次后续直接复用
 
 ### 性能优化（前台）
 
-- **JSON API 局部刷新** - `refreshPage()` 改为并行请求 `/api/stats` + `/api/proxies/grouped` + `/api/subscriptions` 三个 JSON API，局部更新统计数字、协议分布图、订阅源表格和当前 Tab 节点列表，替代整页 HTML → DOMParser 解析 → innerHTML 替换 → 正则提取 JS 数据
+- **JSON API 局部刷新** - `refreshPage()` 改为并行请求 `/api/stats` + `/api/proxies/grouped` + `/api/subscriptions` 三个 JSON API，局部更新统计数字、协议分布图、订阅源表格和当前 Tab 节点列表
 - **协议分布图动态更新** - 15 秒统计刷新时同步更新 Chart.js 饼图数据，使用 `update('none')` 无动画快速刷新
-- **`subscriptions_json` 精简序列化** - 不再使用 `asdict()` 递归序列化所有 12 个字段，改为手动构造仅包含 JS 需要的 7~8 个字段的字典
-- **`_proxy_to_dict` 精简** - 去掉不存在的 `status` 字段（修复 `AttributeError`）、前端不使用的 `last_check_time`/`last_success_time`，添加前端需要的 `created_at`
-- **CDN 预连接** - `<link rel="dns-prefetch">` + `<link rel="preconnect">` 到 jsdelivr CDN，提前完成 DNS 解析和 TCP/TLS 连接建立
-- **Chart.js 异步加载** - `<script async>` 加载不阻塞首屏渲染，饼图初始化改为 `initProtocolChart()` 函数带轮询等待（最多 3 秒）
-- **Bootstrap JS `defer` 加载** - `<script defer>` 不阻塞 HTML 解析，`initTooltips()` 改为 `DOMContentLoaded` 回调中调用
+- **`subscriptions_json` 精简序列化** - 不再使用 `asdict()` 递归序列化所有字段，改为手动构造仅包含 JS 需要字段的字典
+- **`_proxy_to_dict` 精简** - 去掉不存在的 `status` 字段、前端不使用的 `last_check_time`/`last_success_time`，添加前端需要的 `created_at`
+- **CDN 预连接** - `<link rel="dns-prefetch">` + `<link rel="preconnect">` 到 jsdelivr CDN
+- **Chart.js 异步加载** - `<script async>` 加载不阻塞首屏渲染，饼图初始化改为轮询等待
+- **Bootstrap JS `defer` 加载** - `<script defer>` 不阻塞 HTML 解析，`initTooltips()` 改为 `DOMContentLoaded` 回调
+
+### Web 界面
+
+- **内联 SVG favicon** - 使用 data URI 内联地球 emoji 作为 favicon，消除 `/favicon.ico` 404 请求
+- **日志重复修复** - uvicorn reload 时 handler 重复添加导致日志输出两次，添加 `root_logger.handlers.clear()` 修复
+
+### API 修复
+
+- **`PUT /api/config/max-proxies`** - 改用 Pydantic `MaxProxiesBody` 模型接收请求体，修复 422 Unprocessable Entity 错误
 
 ---
 
@@ -44,9 +61,9 @@ All notable changes to this project will be documented in this file.
 ### 核心重构
 
 - **节点-订阅关联重构** - 代理节点使用 `subscription_id`（整数）替代 `source`（字符串）绑定所属订阅源，已存在于其他订阅的节点不重复入库
-- **纯文本订阅格式** - 对外订阅输出改为纯文本格式（每行一条原始代理 URI），参照 `subdom.txt` 样式；移除 base64 编码输出
+- **纯文本订阅格式** - 对外订阅输出改为纯文本格式（每行一条原始代理 URI）；移除 base64 编码输出
 - **内核转发检测** - 新增 Xray 内核转发检测能力，支持 HTTP/SOCKS 代理转发后检测连通性；TCP/TLS 直接检测作为回退
-- **检测失败直接删除** - 取消 `fail_count` 累积逻辑，检测不通过的节点直接从数据库删除，不再保留
+- **检测失败直接删除** - 取消 `fail_count` 累积逻辑，检测不通过的节点直接从数据库删除
 - **实例源节点不入库** - 服务实例获取的节点仅统计已连接数量，不再写入代理数据库
 - **socks4 协议移除** - 不再支持 socks4/socks4a 协议，拉取订阅时自动移除已有的 socks4 节点
 

@@ -6,6 +6,7 @@ import logging
 import random
 from datetime import datetime, timedelta, timezone
 
+import aiohttp
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -219,7 +220,11 @@ class TaskScheduler:
 
         except Exception as e:
             await self.db.batch_update_subscription_meta(sub_id, fetch_status="failed")
-            logger.error("拉取订阅 #%d 异常: %s", sub.id, e, exc_info=True)
+            # 超时/网络错误只打 warning，其他异常打 error + 堆栈
+            if isinstance(e, (asyncio.TimeoutError, TimeoutError, aiohttp.ClientError)):
+                logger.warning("拉取订阅 #%d 失败: %s", sub.id, e)
+            else:
+                logger.error("拉取订阅 #%d 异常: %s", sub.id, e, exc_info=True)
 
     async def fetch_and_check(self) -> None:
         """手动触发：并行拉取所有启用的订阅和实例源并检测入库"""
