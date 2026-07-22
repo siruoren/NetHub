@@ -79,8 +79,7 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
     # 初始化模板
     template_dir = Path(__file__).parent / "templates"
     _templates = Jinja2Templates(directory=str(template_dir))
-    # 禁用 Jinja2 模板缓存，避免新版 Starlette 缓存兼容性问题
-    _templates.env.cache_size = 0
+    _templates.env.cache_size = 128  # 启用模板编译缓存
 
     # 创建 FastAPI 实例
     app = FastAPI(

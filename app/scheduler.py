@@ -171,6 +171,9 @@ class TaskScheduler:
             added = 0
             skipped = 0
 
+            # 批量查询所有解析节点的 link 是否已存在于数据库，避免 N+1 查询
+            existing_map = await self.db.get_proxies_by_links(links)
+
             for proxy in proxies:
                 latency = results.get(proxy.link)
 
@@ -179,7 +182,7 @@ class TaskScheduler:
                     skipped += 1
                     continue
 
-                existing = await self.db.get_proxy_by_link(proxy.link)
+                existing = existing_map.get(proxy.link)
                 if existing:
                     # 节点已存在于数据库中（可能属于其他订阅）
                     # 不更新、不转移，仅更新延迟

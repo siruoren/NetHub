@@ -15,6 +15,8 @@ class ProxyDatabase:
     def __init__(self, db_path: str):
         self.db_path = db_path
         self._db: aiosqlite.Connection | None = None
+        self._stats_cache: dict | None = None     # 统计信息内存缓存
+        self._stats_dirty: bool = True             # 缓存是否需要刷新
 
     async def init(self) -> None:
         """初始化数据库连接和表结构"""
@@ -25,6 +27,12 @@ class ProxyDatabase:
 
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
+
+        # SQLite 性能优化
+        await self._db.execute("PRAGMA journal_mode=WAL")       # WAL 模式，读写并发
+        await self._db.execute("PRAGMA synchronous=NORMAL")      # 减少 fsync 次数
+        await self._db.execute("PRAGMA cache_size=-8000")        # 8MB 缓存
+        await self._db.execute("PRAGMA temp_store=MEMORY")       # 临时表内存存储
 
         await self._db.executescript("""
             CREATE TABLE IF NOT EXISTS proxies (
@@ -46,6 +54,8 @@ class ProxyDatabase:
             CREATE INDEX IF NOT EXISTS idx_proxies_latency ON proxies(latency_ms);
             CREATE INDEX IF NOT EXISTS idx_proxies_link ON proxies(link);
             CREATE INDEX IF NOT EXISTS idx_proxies_sub_id ON proxies(subscription_id);
+            CREATE INDEX IF NOT EXISTS idx_proxies_sub_created ON proxies(subscription_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_proxies_available ON proxies(latency_ms, fail_count, subscription_id);
 
             CREATE TABLE IF NOT EXISTS subscriptions (
                 id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -164,6 +174,7 @@ class ProxyDatabase:
                  latency_ms, subscription_id, now, now if latency_ms >= 0 else "", now),
             )
             await self._db.commit()
+            self._invalidate_stats()
             return cursor.rowcount > 0
         except aiosqlite.IntegrityError:
             return False
@@ -179,6 +190,7 @@ class ProxyDatabase:
             (latency_ms, now, now, proxy_id),
         )
         await self._db.commit()
+        self._invalidate_stats()
 
     async def batch_update_latency(self, updates: list[tuple[int, float]]) -> None:
         """批量更新延迟并重置 fail_count
@@ -197,6 +209,7 @@ class ProxyDatabase:
             [(lat, now, now, pid) for pid, lat in updates],
         )
         await self._db.commit()
+        self._invalidate_stats()
 
     async def batch_delete_proxies(self, proxy_ids: list[int]) -> None:
         """批量删除节点（检测失败直接删除）"""
@@ -207,16 +220,19 @@ class ProxyDatabase:
             [(pid,) for pid in proxy_ids],
         )
         await self._db.commit()
+        self._invalidate_stats()
 
     async def delete_proxy(self, proxy_id: int) -> None:
         """删除指定节点"""
         await self._db.execute("DELETE FROM proxies WHERE id = ?", (proxy_id,))
         await self._db.commit()
+        self._invalidate_stats()
 
     async def delete_all_proxies(self) -> int:
         """删除所有节点，返回删除数量"""
         cursor = await self._db.execute("DELETE FROM proxies")
         await self._db.commit()
+        self._invalidate_stats()
         return cursor.rowcount
 
     async def delete_proxies_by_subscription_id(self, subscription_id: int) -> int:
@@ -225,6 +241,7 @@ class ProxyDatabase:
             "DELETE FROM proxies WHERE subscription_id = ?", (subscription_id,)
         )
         await self._db.commit()
+        self._invalidate_stats()
         return cursor.rowcount
 
     async def get_all_proxies(self) -> list[ProxyDBRecord]:
@@ -269,6 +286,17 @@ class ProxyDatabase:
         )
         row = await cursor.fetchone()
         return self._row_to_record(row) if row else None
+
+    async def get_proxies_by_links(self, links: list[str]) -> dict[str, ProxyDBRecord]:
+        """根据 link 列表批量查询节点，返回 link→ProxyDBRecord 映射"""
+        if not links:
+            return {}
+        placeholders = ",".join("?" for _ in links)
+        cursor = await self._db.execute(
+            f"SELECT * FROM proxies WHERE link IN ({placeholders})", links
+        )
+        rows = await cursor.fetchall()
+        return {row["link"]: self._row_to_record(row) for row in rows}
 
     async def get_proxies_by_subscription_id(self, subscription_id: int) -> list[ProxyDBRecord]:
         """根据订阅源 ID 获取节点，按入库时间正序"""
@@ -319,6 +347,7 @@ class ProxyDatabase:
                 (url, crontab, latency_threshold, max_retries, max_concurrent, int(enabled), now),
             )
             await self._db.commit()
+            self._invalidate_stats()
             return await self.get_subscription_by_id(cursor.lastrowid)
         except aiosqlite.IntegrityError:
             return None
@@ -366,6 +395,7 @@ class ProxyDatabase:
             f"UPDATE subscriptions SET {set_clause} WHERE id = ?", values
         )
         await self._db.commit()
+        self._invalidate_stats()
         return cursor.rowcount > 0
 
     async def delete_subscription(self, sub_id: int) -> bool:
@@ -374,6 +404,7 @@ class ProxyDatabase:
         await self.delete_proxies_by_subscription_id(sub_id)
         cursor = await self._db.execute("DELETE FROM subscriptions WHERE id = ?", (sub_id,))
         await self._db.commit()
+        self._invalidate_stats()  # subscriptions 表变化影响 total 统计
         return cursor.rowcount > 0
 
     async def increment_empty_days(self, sub_id: int) -> None:
@@ -431,12 +462,19 @@ class ProxyDatabase:
             grouped.setdefault(record.subscription_id, []).append(record)
         return grouped
 
+    def _invalidate_stats(self) -> None:
+        """标记统计缓存需要刷新"""
+        self._stats_dirty = True
+
     async def get_stats(self) -> dict:
-        """获取统计信息
+        """获取统计信息（带内存缓存）
 
         total: 订阅源地址数量（有多少个订阅源URL）
         available: 数据库中检测通过的可用节点数
         """
+        if not self._stats_dirty and self._stats_cache is not None:
+            return self._stats_cache
+
         cursor = await self._db.execute("SELECT COUNT(*) as total FROM subscriptions")
         total = (await cursor.fetchone())["total"]
 
@@ -456,12 +494,14 @@ class ProxyDatabase:
         rows = await cursor.fetchall()
         protocol_dist = {row["protocol"]: row["count"] for row in rows}
 
-        return {
+        self._stats_cache = {
             "total": total,
             "available": available,
             "avg_latency_ms": round(avg_latency, 1),
             "protocol_distribution": protocol_dist,
         }
+        self._stats_dirty = False
+        return self._stats_cache
 
     async def get_last_check_time(self) -> str:
         """获取最近一次检测时间"""
