@@ -538,15 +538,15 @@ const instData = {{ instance_sources_json | safe }};
     });
 })();
 
-// 定时刷新统计
+// 定时刷新统计（15秒）
 setInterval(function() {
-    fetch('/api/stats').then(r => r.json()).then(stats => {
+    fetch('/api/stats', {cache:'no-store'}).then(r => r.json()).then(stats => {
         var cards = document.querySelectorAll('.stat-card h3');
         if (cards[0]) cards[0].textContent = stats.total;
         if (cards[1]) cards[1].textContent = stats.available;
         if (cards[2]) cards[2].textContent = Math.round(stats.avg_latency_ms) + ' ms';
     }).catch(() => {});
-}, 30000);
+}, 15000);
 
 // ---- 订阅管理 ----
 async function addSubscription() {
@@ -562,7 +562,7 @@ async function addSubscription() {
     });
     try {
         const resp = await fetch('/api/subscriptions?' + params.toString(), { method: 'POST' });
-        if (resp.ok) { location.reload(); }
+        if (resp.ok) { refreshPage(); }
         else { const err = await resp.json(); alert('添加失败: ' + (err.detail || '')); }
     } catch (e) { alert('请求失败: ' + e.message); }
 }
@@ -594,7 +594,7 @@ async function saveSubscription() {
     if (concurrent) params.set('max_concurrent', concurrent);
     try {
         const resp = await fetch('/api/subscriptions/' + id + '?' + params.toString(), { method: 'PUT' });
-        if (resp.ok) { location.reload(); }
+        if (resp.ok) { refreshPage(); }
         else { const err = await resp.json(); alert('保存失败: ' + (err.detail || '')); }
     } catch (e) { alert('请求失败: ' + e.message); }
 }
@@ -603,7 +603,7 @@ async function toggleSubscription(id, enable) {
     const params = new URLSearchParams({ enabled: enable ? 'true' : 'false' });
     try {
         const resp = await fetch('/api/subscriptions/' + id + '?' + params.toString(), { method: 'PUT' });
-        if (resp.ok) { location.reload(); }
+        if (resp.ok) { refreshPage(); }
     } catch (e) { alert('操作失败: ' + e.message); }
 }
 
@@ -611,7 +611,7 @@ async function deleteSubscription(id) {
     if (!confirm('确定删除该订阅源？')) return;
     try {
         await fetch('/api/subscriptions/' + id, { method: 'DELETE' });
-        location.reload();
+        refreshPage();
     } catch (e) { alert('删除失败: ' + e.message); }
 }
 
@@ -638,7 +638,7 @@ async function triggerFetchAll() {
     try {
         const resp = await fetch('/api/fetch', { method: 'POST' });
         const data = await resp.json();
-        if (resp.ok) { alert(data.message); setTimeout(refreshPage, 30000); }
+        if (resp.ok) { alert(data.message); setTimeout(refreshPage, 5000); }
         else { alert('拉取失败: ' + (data.detail || '')); }
     } catch (e) { alert('请求失败: ' + e.message); }
 }
@@ -647,7 +647,7 @@ async function triggerVerifyAll() {
     try {
         const resp = await fetch('/api/verify', { method: 'POST' });
         const data = await resp.json();
-        if (resp.ok) { alert(data.message); setTimeout(refreshPage, 30000); }
+        if (resp.ok) { alert(data.message); setTimeout(refreshPage, 5000); }
         else { alert('验证失败: ' + (data.detail || '')); }
     } catch (e) { alert('请求失败: ' + e.message); }
 }
@@ -656,7 +656,7 @@ async function triggerFetchSub(subId) {
     try {
         const resp = await fetch('/api/fetch/' + subId, { method: 'POST' });
         const data = await resp.json();
-        if (resp.ok) { alert(data.message); setTimeout(refreshPage, 30000); }
+        if (resp.ok) { alert(data.message); setTimeout(refreshPage, 5000); }
         else { alert('拉取失败: ' + (data.detail || '')); }
     } catch (e) { alert('请求失败: ' + e.message); }
 }
@@ -665,7 +665,7 @@ async function triggerVerifySub(subId) {
     try {
         const resp = await fetch('/api/verify/' + subId, { method: 'POST' });
         const data = await resp.json();
-        if (resp.ok) { alert(data.message); setTimeout(refreshPage, 30000); }
+        if (resp.ok) { alert(data.message); setTimeout(refreshPage, 5000); }
         else { alert('验证失败: ' + (data.detail || '')); }
     } catch (e) { alert('请求失败: ' + e.message); }
 }
@@ -673,8 +673,17 @@ async function triggerVerifySub(subId) {
 async function deleteProxy(id) {
     if (!confirm('确定删除该节点？')) return;
     try {
-        await fetch('/api/proxies/' + id, { method: 'DELETE' });
-        location.reload();
+        const resp = await fetch('/api/proxies/' + id, { method: 'DELETE' });
+        if (resp.ok) {
+            // 局部移除行，不刷新整页
+            var row = document.querySelector('tr[data-latency] button[onclick="deleteProxy(' + id + ')"]');
+            if (row) {
+                var tr = row.closest('tr');
+                var subId = tr ? tr.dataset.sub : null;
+                if (tr) tr.remove();
+                if (subId) applyPagination(subId);
+            }
+        }
     } catch (e) { alert('删除失败: ' + e.message); }
 }
 
@@ -685,7 +694,7 @@ async function deleteAllProxies() {
         const data = await resp.json();
         if (resp.ok) {
             alert('已清除 ' + data.count + ' 个节点');
-            location.reload();
+            refreshPage();
         } else {
             alert('清除失败');
         }
@@ -710,7 +719,7 @@ async function importConfig(input) {
         const data = await resp.json();
         if (resp.ok) {
             alert(data.message);
-            location.reload();
+            refreshPage();
         } else {
             alert('导入失败: ' + (data.detail || '未知错误'));
         }
@@ -721,7 +730,22 @@ async function importConfig(input) {
     input.value = '';
 }
 
-function refreshPage() { location.reload(); }
+function refreshPage() {
+    // 使用 no-store 避免缓存，直接替换整个页面
+    fetch(window.location.href, {cache:'no-store'})
+        .then(r => r.text())
+        .then(html => {
+            var parser = new DOMParser();
+            var doc = parser.parseFromString(html, 'text/html');
+            // 仅替换主内容区域
+            var newContent = doc.querySelector('#mainContent') || doc.body;
+            var curContent = document.querySelector('#mainContent') || document.body;
+            curContent.innerHTML = newContent.innerHTML;
+            // 重新初始化分页
+            initPagination();
+        })
+        .catch(() => { window.location.reload(); });
+}
 
 // ---- 分页逻辑 ----
 const PAGE_SIZE = 10;
@@ -832,7 +856,7 @@ async function addCheckUrl() {
     if (!url) { alert('请输入检测目标 URL'); return; }
     try {
         const resp = await fetch('/api/check-urls?url=' + encodeURIComponent(url), { method: 'POST' });
-        if (resp.ok) { location.reload(); }
+        if (resp.ok) { refreshPage(); }
         else { const err = await resp.json(); alert('添加失败: ' + (err.detail || '')); }
     } catch (e) { alert('请求失败: ' + e.message); }
 }
@@ -873,7 +897,7 @@ async function addInstanceSource() {
                 max_concurrent: parseInt(document.getElementById('inst-concurrent').value) || 50,
             }),
         });
-        if (resp.ok) { location.reload(); }
+        if (resp.ok) { refreshPage(); }
         else { const err = await resp.json(); alert('添加失败: ' + (err.detail || '')); }
     } catch (e) { alert('请求失败: ' + e.message); }
 }
@@ -908,7 +932,7 @@ async function saveInstanceSource() {
     if (concurrent) params.set('max_concurrent', concurrent);
     try {
         const resp = await fetch('/api/instance-sources/' + id + '?' + params.toString(), { method: 'PUT' });
-        if (resp.ok) { location.reload(); }
+        if (resp.ok) { refreshPage(); }
         else { const err = await resp.json(); alert('保存失败: ' + (err.detail || '')); }
     } catch (e) { alert('请求失败: ' + e.message); }
 }
@@ -917,7 +941,7 @@ async function toggleInstanceSource(id, enable) {
     const params = new URLSearchParams({ enabled: enable ? 'true' : 'false' });
     try {
         const resp = await fetch('/api/instance-sources/' + id + '?' + params.toString(), { method: 'PUT' });
-        if (resp.ok) { location.reload(); }
+        if (resp.ok) { refreshPage(); }
     } catch (e) { alert('操作失败: ' + e.message); }
 }
 
@@ -925,7 +949,7 @@ async function deleteInstanceSource(id) {
     if (!confirm('确定删除该服务实例源？')) return;
     try {
         await fetch('/api/instance-sources/' + id, { method: 'DELETE' });
-        location.reload();
+        refreshPage();
     } catch (e) { alert('删除失败: ' + e.message); }
 }
 
@@ -933,7 +957,7 @@ async function fetchInstanceSource(id) {
     try {
         const resp = await fetch('/api/instance-sources/' + id + '/fetch', { method: 'POST' });
         const data = await resp.json();
-        if (resp.ok) { alert(data.message); setTimeout(refreshPage, 30000); }
+        if (resp.ok) { alert(data.message); setTimeout(refreshPage, 5000); }
         else { alert('获取失败: ' + (data.detail || '')); }
     } catch (e) { alert('请求失败: ' + e.message); }
 }
@@ -942,7 +966,7 @@ async function importSubs(id) {
     try {
         const resp = await fetch('/api/instance-sources/' + id + '/import-subs', { method: 'POST' });
         const data = await resp.json();
-        if (resp.ok) { alert(data.message); setTimeout(refreshPage, 10000); }
+        if (resp.ok) { alert(data.message); setTimeout(refreshPage, 5000); }
         else { alert('导入失败: ' + (data.detail || '')); }
     } catch (e) { alert('请求失败: ' + e.message); }
 }
