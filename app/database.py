@@ -183,28 +183,28 @@ class ProxyDatabase:
         """批量插入新节点，link 唯一约束，重复则忽略。返回实际插入数量
 
         proxies: [(ProxyInfo, latency_ms, subscription_id), ...]
-        使用 INSERT OR IGNORE + executemany，单次 commit
+        逐条 execute + commit，每条插入后立即刷新统计缓存，前端可实时获取可用节点数
         """
         if not proxies:
             return 0
         now = datetime.now(timezone(timedelta(hours=8))).isoformat()
-        rows = [
-            (proxy.protocol, proxy.name, proxy.address, proxy.port, proxy.link,
-             latency, 0, sub_id, now, now if latency >= 0 else "", now)
-            for proxy, latency, sub_id in proxies
-        ]
-        cursor = await self._db.executemany(
-            """INSERT OR IGNORE INTO proxies
-               (protocol, name, address, port, link, latency_ms, fail_count, subscription_id,
-                last_check_time, last_success_time, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            rows,
-        )
-        await self._db.commit()
-        # executemany 返回的总 rowcount 是所有语句的 rowcount之和
-        inserted = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
-        if inserted > 0:
-            self._invalidate_stats()
+        inserted = 0
+        for proxy, latency, sub_id in proxies:
+            try:
+                cursor = await self._db.execute(
+                    """INSERT OR IGNORE INTO proxies
+                       (protocol, name, address, port, link, latency_ms, fail_count, subscription_id,
+                        last_check_time, last_success_time, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)""",
+                    (proxy.protocol, proxy.name, proxy.address, proxy.port, proxy.link,
+                     latency, sub_id, now, now if latency >= 0 else "", now),
+                )
+                if cursor.rowcount > 0:
+                    await self._db.commit()
+                    self._invalidate_stats()
+                    inserted += 1
+            except aiosqlite.IntegrityError:
+                pass
         return inserted
 
     async def update_latency(self, proxy_id: int, latency_ms: float) -> None:
@@ -224,31 +224,33 @@ class ProxyDatabase:
         """批量更新延迟并重置 fail_count
 
         updates: [(proxy_id, latency_ms), ...]
-        单次 commit，避免逐条提交的性能开销
+        逐条 commit + invalidate_stats，前端可实时获取最新延迟统计
         """
         if not updates:
             return
         now = datetime.now(timezone(timedelta(hours=8))).isoformat()
-        await self._db.executemany(
-            """UPDATE proxies
-               SET latency_ms = ?, fail_count = 0,
-                   last_check_time = ?, last_success_time = ?
-               WHERE id = ?""",
-            [(lat, now, now, pid) for pid, lat in updates],
-        )
-        await self._db.commit()
+        for pid, lat in updates:
+            await self._db.execute(
+                """UPDATE proxies
+                   SET latency_ms = ?, fail_count = 0,
+                       last_check_time = ?, last_success_time = ?
+                   WHERE id = ?""",
+                (lat, now, now, pid),
+            )
+            await self._db.commit()
         self._invalidate_stats()
 
     async def batch_delete_proxies(self, proxy_ids: list[int]) -> None:
-        """批量删除节点（检测失败直接删除）"""
+        """批量删除节点（检测失败直接删除）
+
+        逐条 commit + invalidate_stats，前端可实时获取可用节点数变化
+        """
         if not proxy_ids:
             return
-        await self._db.executemany(
-            "DELETE FROM proxies WHERE id = ?",
-            [(pid,) for pid in proxy_ids],
-        )
-        await self._db.commit()
-        self._invalidate_stats()
+        for pid in proxy_ids:
+            await self._db.execute("DELETE FROM proxies WHERE id = ?", (pid,))
+            await self._db.commit()
+            self._invalidate_stats()
 
     async def delete_proxy(self, proxy_id: int) -> None:
         """删除指定节点"""
