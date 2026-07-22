@@ -36,6 +36,7 @@ class SchedulerConfig:
     verify_interval: int = 1800  # 验证节点间隔（秒）
     cleanup_interval: int = 7200  # 清理间隔（秒）
     max_fail_count: int = 3  # 最大连续失败次数
+    max_proxies: int = 500  # 最大可用条目数，超出按入库时间删除最老的
 
 
 @dataclass
@@ -91,6 +92,7 @@ def load_config(path: str = "config.yaml") -> AppConfig:
             "verify_interval": 1800,
             "cleanup_interval": 7200,
             "max_fail_count": 3,
+            "max_proxies": 500,
         },
     }
 

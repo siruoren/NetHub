@@ -131,45 +131,36 @@ class TaskScheduler:
 
         try:
             logger.info("开始拉取订阅 #%d: %s", sub.id, sub.url[:50])
-            await self.db.update_fetch_status(sub_id, "updating")
+            await self.db.batch_update_subscription_meta(sub_id, fetch_status="updating")
             content = await fetch_subscription(sub.url)
             proxies = parse_subscription(content)
             if not proxies:
                 logger.warning("订阅 #%d 未解析到任何节点", sub.id)
+                # 空节点天数+1、总数=0、状态=success，合并为一次 commit
                 await self.db.increment_empty_days(sub_id)
-                await self.db.update_total_count(sub_id, 0)
-                await self.db.update_fetch_status(sub_id, "success")
+                await self.db.batch_update_subscription_meta(sub_id, total_count=0, fetch_status="success")
                 return
 
             logger.info("订阅 #%d: 解析到 %d 个节点，并发检测中...", sub.id, len(proxies))
 
             # 自动移除该订阅下已有的 socks4 节点（不再支持）
-            existing_proxies = await self.db.get_proxies_by_subscription_id(sub_id)
-            socks4_ids = [p.id for p in existing_proxies if p.protocol == "socks4"]
-            if socks4_ids:
-                await self.db.batch_delete_proxies(socks4_ids)
-                logger.info("订阅 #%d: 自动移除 %d 个 socks4 节点", sub_id, len(socks4_ids))
+            socks4_count = await self.db.delete_proxies_by_subscription_id_and_protocol(sub_id, "socks4")
+            if socks4_count:
+                logger.info("订阅 #%d: 自动移除 %d 个 socks4 节点", sub_id, socks4_count)
 
-            # 并发检测所有节点延迟
-            sub_checker = ProxyChecker(
-                check_urls=self.checker.check_urls,
-                timeout=self.config.check.timeout,
-                max_concurrent=sub.max_concurrent,
-                socks_port=self.checker.socks_port,
-                http_port=self.checker.http_port,
-                check_mode=self.checker.check_mode,
-                kernel_path=self.checker.kernel_path,
-                check_retries=self.config.check.check_retries,
-            )
+            # 使用共享 checker 检测所有节点延迟（复用 HTTP session）
             links = [p.link for p in proxies]
-            results = await sub_checker.check_batch(links)
+            results = await self.checker.check_batch(links)
 
             # 批量处理检测结果
             threshold = sub.latency_threshold
             latency_updates = []   # [(proxy_id, latency), ...]
             delete_ids = []        # [proxy_id, ...]  已入库但延迟超标需删除的节点
-            added = 0
+            new_proxies = []       # [(ProxyInfo, latency, sub_id), ...] 待批量插入的新节点
             skipped = 0
+
+            # 批量查询所有解析节点的 link 是否已存在于数据库，避免 N+1 查询
+            existing_map = await self.db.get_proxies_by_links(links)
 
             for proxy in proxies:
                 latency = results.get(proxy.link)
@@ -179,7 +170,7 @@ class TaskScheduler:
                     skipped += 1
                     continue
 
-                existing = await self.db.get_proxy_by_link(proxy.link)
+                existing = existing_map.get(proxy.link)
                 if existing:
                     # 节点已存在于数据库中（可能属于其他订阅）
                     # 不更新、不转移，仅更新延迟
@@ -191,37 +182,43 @@ class TaskScheduler:
                             delete_ids.append(existing.id)
                         skipped += 1
                 else:
-                    # 新节点
+                    # 新节点 - 延迟达标才入库
                     if latency <= threshold:
-                        success = await self.db.insert_proxy(proxy, latency, sub_id)
-                        if success:
-                            added += 1
+                        new_proxies.append((proxy, latency, sub_id))
                     else:
                         skipped += 1
 
             # 批量写入数据库
+            added = await self.db.batch_insert_proxies(new_proxies)
             if latency_updates:
                 await self.db.batch_update_latency(latency_updates)
             if delete_ids:
                 await self.db.batch_delete_proxies(delete_ids)
 
-            # 有节点入库则重置空天数
-            if added > 0:
-                await self.db.reset_empty_days(sub_id)
-
-            # 更新订阅源的节点总数
-            await self.db.update_total_count(sub_id, len(proxies))
-            await self.db.update_fetch_status(sub_id, "success")
+            # 合并更新订阅源元信息：总数 + 状态 + 重置空天数（单次 commit）
+            await self.db.batch_update_subscription_meta(
+                sub_id,
+                total_count=len(proxies),
+                fetch_status="success",
+                reset_empty=(added > 0),
+            )
 
             self._last_fetch_time = datetime.now(timezone(timedelta(hours=8))).isoformat()
             logger.info("订阅 #%d 拉取完成: 新增 %d, 更新延迟 %d, 跳过 %d, 总解析 %d",
                         sub.id, added, len(latency_updates), skipped, len(proxies))
 
+            # 强制执行最大条目数限制
+            max_proxies = self.config.scheduler.max_proxies
+            if max_proxies > 0:
+                deleted = await self.db.enforce_max_proxies(max_proxies)
+                if deleted:
+                    logger.info("超出最大条目数 %d，已删除 %d 个最老的节点", max_proxies, deleted)
+
             # 拉取完成后，同时验证该订阅下所有已入库节点
             await self.verify_subscription_proxies(sub_id)
 
         except Exception as e:
-            await self.db.update_fetch_status(sub_id, "failed")
+            await self.db.batch_update_subscription_meta(sub_id, fetch_status="failed")
             logger.error("拉取订阅 #%d 异常: %s", sub.id, e, exc_info=True)
 
     async def fetch_and_check(self) -> None:
@@ -256,31 +253,43 @@ class TaskScheduler:
             self._fetching = False
 
     async def verify_stored_proxies(self) -> None:
-        """验证已存节点可用性（并发检测 + 批量数据库写入）"""
+        """验证已存节点可用性（按订阅源分组批量检测 + 批量数据库写入）
+
+        使用 grouped 查询替代全量查询，利用复合索引加速
+        """
         if self._verifying:
             logger.info("上一次验证任务尚未完成，跳过本次")
             return
 
         self._verifying = True
         try:
-            proxies = await self.db.get_all_proxies()
-            if not proxies:
-                logger.info("数据库中没有节点，跳过验证")
+            grouped = await self.db.get_proxies_grouped_by_subscription(
+                self.config.check.latency_threshold * 2  # 验证时阈值放宽2倍
+            )
+            if not grouped:
+                logger.info("数据库中没有可用节点，跳过验证")
                 return
 
-            logger.info("开始验证 %d 个节点...", len(proxies))
-            links = [p.link for p in proxies]
-            results = await self.checker.check_batch(links)
+            total = sum(len(ps) for ps in grouped.values())
+            logger.info("开始验证 %d 个节点（%d 个订阅源）...", total, len(grouped))
+
+            all_links = []
+            link_to_proxy = {}  # link → ProxyDBRecord
+            for sub_id, proxies in grouped.items():
+                for proxy in proxies:
+                    all_links.append(proxy.link)
+                    link_to_proxy[proxy.link] = proxy
+
+            results = await self.checker.check_batch(all_links)
 
             latency_updates = []
             delete_ids = []
 
-            for proxy in proxies:
-                latency = results.get(proxy.link)
+            for link, proxy in link_to_proxy.items():
+                latency = results.get(link)
                 if latency is not None:
                     latency_updates.append((proxy.id, latency))
                 else:
-                    # 检测失败直接删除
                     delete_ids.append(proxy.id)
 
             # 批量写入
@@ -317,18 +326,9 @@ class TaskScheduler:
 
             logger.info("开始验证订阅 #%d 的 %d 个已入库节点...", sub_id, len(proxies))
 
-            sub_checker = ProxyChecker(
-                check_urls=self.checker.check_urls,
-                timeout=self.config.check.timeout,
-                max_concurrent=sub.max_concurrent,
-                socks_port=self.checker.socks_port,
-                http_port=self.checker.http_port,
-                check_mode=self.checker.check_mode,
-                kernel_path=self.checker.kernel_path,
-                check_retries=self.config.check.check_retries,
-            )
+            # 使用共享 checker 检测（复用 HTTP session）
             links = [p.link for p in proxies]
-            results = await sub_checker.check_batch(links)
+            results = await self.checker.check_batch(links)
 
             latency_updates = []
             delete_ids = []
@@ -403,7 +403,7 @@ class TaskScheduler:
 
         try:
             logger.info("开始获取实例源 #%d: %s", source.id, source.base_url)
-            await self.db.update_instance_fetch_status(source_id, "updating")
+            await self.db.batch_update_instance_meta(source_id, fetch_status="updating")
 
             proxies, subscription_urls = await fetch_connected_proxies(
                 source.base_url, source.username, source.password,
@@ -416,13 +416,12 @@ class TaskScheduler:
             logger.info("实例源 #%d: 已连接 %d 个节点, 发现 %d 个订阅源",
                         source.id, connected_count, len(subscription_urls))
 
-            # 仅更新统计信息，节点不写入数据库
-            await self.db.update_instance_total_count(source_id, connected_count)
-            await self.db.update_instance_fetch_status(source_id, "success")
+            # 合并更新元信息（单次 commit）
+            await self.db.batch_update_instance_meta(source_id, total_count=connected_count, fetch_status="success")
 
             self._last_fetch_time = datetime.now(timezone(timedelta(hours=8))).isoformat()
         except Exception as e:
-            await self.db.update_instance_fetch_status(source_id, "failed")
+            await self.db.batch_update_instance_meta(source_id, fetch_status="failed")
             logger.error("获取实例源 #%d 异常: %s", source.id, e, exc_info=True)
 
     async def fetch_all_instance_sources(self) -> None:

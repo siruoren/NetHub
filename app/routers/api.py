@@ -146,10 +146,31 @@ async def get_stats():
     """获取统计信息"""
     db = get_db()
     scheduler = get_scheduler()
+    config = get_config()
     stats = await db.get_stats()
     stats["last_fetch_time"] = scheduler.last_fetch_time
     stats["last_verify_time"] = scheduler.last_verify_time
+    stats["max_proxies"] = config.scheduler.max_proxies
     return stats
+
+
+class MaxProxiesBody(BaseModel):
+    max_proxies: int
+
+
+@router.put("/config/max-proxies")
+async def update_max_proxies(body: MaxProxiesBody):
+    """更新最大可用条目数（保存到数据库）"""
+    if body.max_proxies < 1:
+        return {"error": "max_proxies 必须为正整数"}
+    max_proxies = body.max_proxies
+    config = get_config()
+    config.scheduler.max_proxies = max_proxies
+    db = get_db()
+    await db.set_setting("max_proxies", str(max_proxies))
+    # 立即执行一次限制检查
+    deleted = await db.enforce_max_proxies(max_proxies)
+    return {"max_proxies": max_proxies, "deleted": deleted}
 
 
 @router.get("/health")
@@ -274,7 +295,7 @@ async def update_subscription(sub_id: int, url: str = None, crontab: str = None,
         asyncio.create_task(scheduler._fetch_single_subscription(sub.id))
     else:
         # 禁用时重置拉取状态
-        await db.update_fetch_status(sub_id, "idle")
+        await db.batch_update_subscription_meta(sub_id, fetch_status="idle")
     return _subscription_to_dict(sub)
 
 
@@ -315,9 +336,7 @@ def _proxy_to_dict(proxy) -> dict:
         "latency_ms": proxy.latency_ms,
         "fail_count": proxy.fail_count,
         "subscription_id": proxy.subscription_id,
-        "last_check_time": proxy.last_check_time,
-        "last_success_time": proxy.last_success_time,
-        "status": proxy.status,
+        "created_at": proxy.created_at,
     }
 
 
@@ -480,7 +499,7 @@ async def update_instance_source(source_id: int, base_url: str = None, username:
         # 启用时自动获取
         asyncio.create_task(scheduler._fetch_single_instance_source(source.id))
     else:
-        await db.update_instance_fetch_status(source_id, "idle")
+        await db.batch_update_instance_meta(source_id, fetch_status="idle")
     return _instance_source_to_dict(source)
 
 
@@ -552,6 +571,7 @@ async def export_config():
 
     config = {
         "version": 1,
+        "max_proxies": get_config().scheduler.max_proxies,
         "subscriptions": [
             {
                 "url": s.url,
@@ -607,6 +627,12 @@ async def import_config(req: ConfigImportRequest):
     sub_dup = 0
     inst_added = 0
     inst_dup = 0
+
+    # 导入 max_proxies 设置
+    max_proxies = config.get("max_proxies")
+    if max_proxies and isinstance(max_proxies, int) and max_proxies > 0:
+        get_config().scheduler.max_proxies = max_proxies
+        await db.set_setting("max_proxies", str(max_proxies))
 
     # 导入订阅源
     for item in config.get("subscriptions", []):

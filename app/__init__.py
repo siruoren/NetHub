@@ -49,7 +49,7 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
     # 加载配置
     _config = load_config(config_path)
 
-    # 配置日志（控制台 + 按天归档文件，保留7天）
+    # 配置日志（控制台 + 文件），防止 reload 重复添加 handler
     log_level = logging.DEBUG if _config.server.debug else logging.INFO
     log_fmt = logging.Formatter(
         fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -57,6 +57,8 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
     )
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
+    # 清除已有 handler 防止重复（uvicorn reload 时会重新导入）
+    root_logger.handlers.clear()
 
     # 控制台
     console_handler = logging.StreamHandler()
@@ -79,8 +81,7 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
     # 初始化模板
     template_dir = Path(__file__).parent / "templates"
     _templates = Jinja2Templates(directory=str(template_dir))
-    # 禁用 Jinja2 模板缓存，避免新版 Starlette 缓存兼容性问题
-    _templates.env.cache_size = 0
+    _templates.env.cache_size = 128  # 启用模板编译缓存
 
     # 创建 FastAPI 实例
     app = FastAPI(
@@ -97,6 +98,15 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
         # 初始化数据库
         await _db.init()
         logger.info("数据库初始化完成: %s", _config.database.path)
+
+        # 从数据库加载持久化设置（覆盖配置文件默认值）
+        max_proxies_str = await _db.get_setting("max_proxies", "")
+        if max_proxies_str:
+            try:
+                _config.scheduler.max_proxies = int(max_proxies_str)
+                logger.info("从数据库加载 max_proxies = %d", _config.scheduler.max_proxies)
+            except ValueError:
+                pass
 
         # 初始化检测 URL：仅当数据库为空时插入默认值
         await _db.init_check_urls(DEFAULT_CHECK_URLS)
@@ -129,6 +139,8 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
 
     @app.on_event("shutdown")
     async def shutdown():
+        if _checker:
+            await _checker.close_session()
         if _scheduler:
             _scheduler.shutdown()
         if _db:

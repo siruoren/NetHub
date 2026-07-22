@@ -1,4 +1,4 @@
-# NetHub v2.0.0
+# NetHub v2.1.0
 
 自动获取、检测、维护节点池，提供 Web 管理界面和订阅链接输出。
 
@@ -11,11 +11,25 @@
 - **节点-订阅绑定** - 每个节点绑定所属 `subscription_id`，已存在于其他订阅的节点不重复入库
 - **纯文本订阅输出** - 每行一条原始代理 URI，参照 `subdom.txt` 格式；同时提供 Clash（YAML）格式
 - **多协议支持** - vmess / vless / trojan / ss / hysteria2 / socks5 / http(s) 解析、检测与 Clash 配置生成
+- **Clash YAML 订阅解析** - 支持解析 Clash 格式的 YAML 订阅源，自动识别并转换为内部节点格式
+- **智能解析容错** - 自动跳过注释行（`#`/`//`），解析失败行去除 BOM、emoji、控制字符等行首特殊字符后重试
 - **服务实例源** - 获取已连接节点数量统计（不入库），支持手工导入实例源中的订阅地址
 - **配置导出/导入** - 一键导出订阅源和实例源配置为 JSON 文件（含时间戳），导入时自动去重
 - **UTC+8 时区统一** - 所有服务时间统一为东八区
 - **单文件日志** - 不归档、不保留历史日志
 - **Docker 部署** - Docker Compose 一键启动
+
+## 性能优化
+
+- **SQLite WAL + PRAGMA 优化** - WAL 模式、synchronous=NORMAL、8MB 缓存、temp_store=MEMORY
+- **复合索引** - subscription_id + created_at、latency_ms + fail_count + subscription_id 双索引加速查询
+- **统计信息内存缓存** - 数据不变时直接返回缓存，避免重复 SQL 查询
+- **共享 HTTP session** - ProxyChecker 复用 aiohttp session，避免每次检测创建新连接
+- **批量数据库操作** - executemany 批量插入/更新/删除，合并元信息更新为单次 commit
+- **N+1 查询优化** - IN 批量查询替代逐个 get_proxy_by_link
+- **前端 JSON API 局部刷新** - 并行请求 3 个 JSON API 局部更新页面，替代整页 DOMParser 解析
+- **协议分布图动态更新** - 15 秒统计刷新同步更新 Chart.js 饼图
+- **CDN 预连接 + async/defer** - dns-prefetch、preconnect 提前建立连接；Chart.js async、Bootstrap JS defer 不阻塞首屏
 
 ## 快速开始
 
@@ -151,7 +165,7 @@ scheduler:
 
 | 方法 | 路径 | 说明 |
 |------|------|--------|
-| GET | `/api/stats` | 统计信息（总订阅条目数、可用节点数、平均延迟） |
+| GET | `/api/stats` | 统计信息（总订阅条目数、可用节点数、平均延迟、协议分布） |
 | GET | `/api/health` | 健康检查 |
 
 ## 订阅链接使用
@@ -203,18 +217,18 @@ proxy_pool/
 │   ├── __init__.py          # 应用工厂 & 全局单例
 │   ├── main.py              # 启动入口
 │   ├── config.py            # YAML 配置加载
-│   ├── database.py          # aiosqlite 异步数据库操作
+│   ├── database.py          # aiosqlite 异步数据库操作（WAL + 缓存 + 批量操作）
 │   ├── models.py            # 数据模型（ProxyInfo / ProxyDBRecord / SubscriptionRecord）
-│   ├── parser.py            # 订阅拉取 & 解析（7 协议）
-│   ├── checker.py           # 内核转发检测 + TCP/TLS 回退检测
+│   ├── parser.py            # 订阅拉取 & 解析（7 协议 + Clash YAML + 容错重试）
+│   ├── checker.py           # 内核转发检测 + TCP/TLS 回退检测（共享 session）
 │   ├── generator.py         # 纯文本 / Clash 订阅生成
-│   ├── scheduler.py         # APScheduler 定时任务调度
+│   ├── scheduler.py         # APScheduler 定时任务调度（共享 checker + N+1 优化）
 │   ├── routers/
 │   │   ├── api.py           # REST API 路由
-│   │   └── web.py           # Web 页面路由
+│   │   └── web.py           # Web 页面路由（精简序列化）
 │   └── templates/
-│       ├── base.html        # 基础模板
-│       ├── index.html       # 主页面（管理 + 节点列表）
+│       ├── base.html        # 基础模板（CDN 预连接 + defer）
+│       ├── index.html       # 主页面（JSON API 局部刷新 + 分页）
 │       └── subscription.html # 订阅链接页
 ├── logs/                    # 日志目录（单文件，不归档）
 ├── data/                    # 数据库目录

@@ -15,6 +15,8 @@ class ProxyDatabase:
     def __init__(self, db_path: str):
         self.db_path = db_path
         self._db: aiosqlite.Connection | None = None
+        self._stats_cache: dict | None = None     # 统计信息内存缓存
+        self._stats_dirty: bool = True             # 缓存是否需要刷新
 
     async def init(self) -> None:
         """初始化数据库连接和表结构"""
@@ -25,6 +27,12 @@ class ProxyDatabase:
 
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
+
+        # SQLite 性能优化
+        await self._db.execute("PRAGMA journal_mode=WAL")       # WAL 模式，读写并发
+        await self._db.execute("PRAGMA synchronous=NORMAL")      # 减少 fsync 次数
+        await self._db.execute("PRAGMA cache_size=-8000")        # 8MB 缓存
+        await self._db.execute("PRAGMA temp_store=MEMORY")       # 临时表内存存储
 
         await self._db.executescript("""
             CREATE TABLE IF NOT EXISTS proxies (
@@ -46,6 +54,8 @@ class ProxyDatabase:
             CREATE INDEX IF NOT EXISTS idx_proxies_latency ON proxies(latency_ms);
             CREATE INDEX IF NOT EXISTS idx_proxies_link ON proxies(link);
             CREATE INDEX IF NOT EXISTS idx_proxies_sub_id ON proxies(subscription_id);
+            CREATE INDEX IF NOT EXISTS idx_proxies_sub_created ON proxies(subscription_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_proxies_available ON proxies(latency_ms, fail_count, subscription_id);
 
             CREATE TABLE IF NOT EXISTS subscriptions (
                 id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,6 +93,11 @@ class ProxyDatabase:
             );
 
             CREATE INDEX IF NOT EXISTS idx_instance_sources_base_url ON instance_sources(base_url);
+
+            CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT    PRIMARY KEY,
+                value TEXT    NOT NULL DEFAULT ''
+            );
         """)
         await self._db.commit()
 
@@ -164,9 +179,38 @@ class ProxyDatabase:
                  latency_ms, subscription_id, now, now if latency_ms >= 0 else "", now),
             )
             await self._db.commit()
+            self._invalidate_stats()
             return cursor.rowcount > 0
         except aiosqlite.IntegrityError:
             return False
+
+    async def batch_insert_proxies(self, proxies: list[tuple[ProxyInfo, float, int]]) -> int:
+        """批量插入新节点，link 唯一约束，重复则忽略。返回实际插入数量
+
+        proxies: [(ProxyInfo, latency_ms, subscription_id), ...]
+        逐条 execute + commit，每条插入后立即刷新统计缓存，前端可实时获取可用节点数
+        """
+        if not proxies:
+            return 0
+        now = datetime.now(timezone(timedelta(hours=8))).isoformat()
+        inserted = 0
+        for proxy, latency, sub_id in proxies:
+            try:
+                cursor = await self._db.execute(
+                    """INSERT OR IGNORE INTO proxies
+                       (protocol, name, address, port, link, latency_ms, fail_count, subscription_id,
+                        last_check_time, last_success_time, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)""",
+                    (proxy.protocol, proxy.name, proxy.address, proxy.port, proxy.link,
+                     latency, sub_id, now, now if latency >= 0 else "", now),
+                )
+                if cursor.rowcount > 0:
+                    await self._db.commit()
+                    self._invalidate_stats()
+                    inserted += 1
+            except aiosqlite.IntegrityError:
+                pass
+        return inserted
 
     async def update_latency(self, proxy_id: int, latency_ms: float) -> None:
         """更新延迟并重置 fail_count"""
@@ -179,44 +223,70 @@ class ProxyDatabase:
             (latency_ms, now, now, proxy_id),
         )
         await self._db.commit()
+        self._invalidate_stats()
 
     async def batch_update_latency(self, updates: list[tuple[int, float]]) -> None:
         """批量更新延迟并重置 fail_count
 
         updates: [(proxy_id, latency_ms), ...]
-        单次 commit，避免逐条提交的性能开销
+        逐条 commit + invalidate_stats，前端可实时获取最新延迟统计
         """
         if not updates:
             return
         now = datetime.now(timezone(timedelta(hours=8))).isoformat()
-        await self._db.executemany(
-            """UPDATE proxies
-               SET latency_ms = ?, fail_count = 0,
-                   last_check_time = ?, last_success_time = ?
-               WHERE id = ?""",
-            [(lat, now, now, pid) for pid, lat in updates],
-        )
-        await self._db.commit()
+        for pid, lat in updates:
+            await self._db.execute(
+                """UPDATE proxies
+                   SET latency_ms = ?, fail_count = 0,
+                       last_check_time = ?, last_success_time = ?
+                   WHERE id = ?""",
+                (lat, now, now, pid),
+            )
+            await self._db.commit()
+        self._invalidate_stats()
 
     async def batch_delete_proxies(self, proxy_ids: list[int]) -> None:
-        """批量删除节点（检测失败直接删除）"""
+        """批量删除节点（检测失败直接删除）
+
+        逐条 commit + invalidate_stats，前端可实时获取可用节点数变化
+        """
         if not proxy_ids:
             return
-        await self._db.executemany(
-            "DELETE FROM proxies WHERE id = ?",
-            [(pid,) for pid in proxy_ids],
-        )
-        await self._db.commit()
+        for pid in proxy_ids:
+            await self._db.execute("DELETE FROM proxies WHERE id = ?", (pid,))
+            await self._db.commit()
+            self._invalidate_stats()
 
     async def delete_proxy(self, proxy_id: int) -> None:
         """删除指定节点"""
         await self._db.execute("DELETE FROM proxies WHERE id = ?", (proxy_id,))
         await self._db.commit()
+        self._invalidate_stats()
 
     async def delete_all_proxies(self) -> int:
         """删除所有节点，返回删除数量"""
         cursor = await self._db.execute("DELETE FROM proxies")
         await self._db.commit()
+        self._invalidate_stats()
+        return cursor.rowcount
+
+    async def enforce_max_proxies(self, max_count: int) -> int:
+        """强制执行最大条目数限制，超出则优先删除延迟最大、历史最老的节点，返回删除数量"""
+        if max_count <= 0:
+            return 0
+        cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM proxies")
+        total = (await cursor.fetchone())["cnt"]
+        if total <= max_count:
+            return 0
+        excess = total - max_count
+        cursor = await self._db.execute(
+            """DELETE FROM proxies WHERE id IN (
+                SELECT id FROM proxies ORDER BY latency_ms DESC, created_at ASC LIMIT ?
+            )""",
+            (excess,),
+        )
+        await self._db.commit()
+        self._invalidate_stats()
         return cursor.rowcount
 
     async def delete_proxies_by_subscription_id(self, subscription_id: int) -> int:
@@ -225,6 +295,7 @@ class ProxyDatabase:
             "DELETE FROM proxies WHERE subscription_id = ?", (subscription_id,)
         )
         await self._db.commit()
+        self._invalidate_stats()
         return cursor.rowcount
 
     async def get_all_proxies(self) -> list[ProxyDBRecord]:
@@ -269,6 +340,27 @@ class ProxyDatabase:
         )
         row = await cursor.fetchone()
         return self._row_to_record(row) if row else None
+
+    async def get_proxies_by_links(self, links: list[str]) -> dict[str, ProxyDBRecord]:
+        """根据 link 列表批量查询节点，返回 link→ProxyDBRecord 映射"""
+        if not links:
+            return {}
+        placeholders = ",".join("?" for _ in links)
+        cursor = await self._db.execute(
+            f"SELECT * FROM proxies WHERE link IN ({placeholders})", links
+        )
+        rows = await cursor.fetchall()
+        return {row["link"]: self._row_to_record(row) for row in rows}
+
+    async def delete_proxies_by_subscription_id_and_protocol(self, subscription_id: int, protocol: str) -> int:
+        """删除指定订阅源下特定协议的所有节点，返回删除数量"""
+        cursor = await self._db.execute(
+            "DELETE FROM proxies WHERE subscription_id = ? AND protocol = ?",
+            (subscription_id, protocol),
+        )
+        await self._db.commit()
+        self._invalidate_stats()
+        return cursor.rowcount
 
     async def get_proxies_by_subscription_id(self, subscription_id: int) -> list[ProxyDBRecord]:
         """根据订阅源 ID 获取节点，按入库时间正序"""
@@ -319,6 +411,7 @@ class ProxyDatabase:
                 (url, crontab, latency_threshold, max_retries, max_concurrent, int(enabled), now),
             )
             await self._db.commit()
+            self._invalidate_stats()
             return await self.get_subscription_by_id(cursor.lastrowid)
         except aiosqlite.IntegrityError:
             return None
@@ -366,14 +459,15 @@ class ProxyDatabase:
             f"UPDATE subscriptions SET {set_clause} WHERE id = ?", values
         )
         await self._db.commit()
+        self._invalidate_stats()
         return cursor.rowcount > 0
 
     async def delete_subscription(self, sub_id: int) -> bool:
-        """删除订阅源及其下所有节点"""
-        # 先删除该订阅下的所有节点
-        await self.delete_proxies_by_subscription_id(sub_id)
+        """删除订阅源及其下所有节点（单次 commit）"""
+        await self._db.execute("DELETE FROM proxies WHERE subscription_id = ?", (sub_id,))
         cursor = await self._db.execute("DELETE FROM subscriptions WHERE id = ?", (sub_id,))
         await self._db.commit()
+        self._invalidate_stats()
         return cursor.rowcount > 0
 
     async def increment_empty_days(self, sub_id: int) -> None:
@@ -400,26 +494,37 @@ class ProxyDatabase:
         rows = await cursor.fetchall()
         return [self._row_to_subscription(row) for row in rows]
 
-    async def update_total_count(self, sub_id: int, count: int) -> None:
-        """更新订阅源最新一次拉取的节点总数"""
+    async def batch_update_subscription_meta(self, sub_id: int,
+                                              total_count: int = None,
+                                              fetch_status: str = None,
+                                              reset_empty: bool = False) -> None:
+        """批量更新订阅源元信息（total_count / fetch_status / empty_days），单次 commit"""
+        updates = []
+        params = []
+        if total_count is not None:
+            updates.append("total_count = ?")
+            params.append(total_count)
+        if fetch_status is not None:
+            updates.append("fetch_status = ?")
+            params.append(fetch_status)
+        if reset_empty:
+            updates.append("empty_days = 0")
+        if not updates:
+            return
+        params.append(sub_id)
         await self._db.execute(
-            "UPDATE subscriptions SET total_count = ? WHERE id = ?",
-            (count, sub_id),
-        )
-        await self._db.commit()
-
-    async def update_fetch_status(self, sub_id: int, status: str) -> None:
-        """更新订阅源拉取状态: idle / updating / success / failed"""
-        await self._db.execute(
-            "UPDATE subscriptions SET fetch_status = ? WHERE id = ?",
-            (status, sub_id),
+            f"UPDATE subscriptions SET {', '.join(updates)} WHERE id = ?", params
         )
         await self._db.commit()
 
     async def get_proxies_grouped_by_subscription(self, max_latency: float) -> dict[int, list[ProxyDBRecord]]:
-        """获取按订阅源 ID 分组的可用节点，按入库时间正序"""
+        """获取按订阅源 ID 分组的可用节点，按入库时间正序
+
+        只查询模板需要的列，减少数据传输和对象创建开销
+        """
         cursor = await self._db.execute(
-            """SELECT * FROM proxies
+            """SELECT id, protocol, name, address, port, link, latency_ms, subscription_id, created_at
+               FROM proxies
                WHERE latency_ms > 0 AND latency_ms <= ? AND fail_count = 0
                ORDER BY subscription_id ASC, created_at ASC""",
             (max_latency,),
@@ -427,41 +532,65 @@ class ProxyDatabase:
         rows = await cursor.fetchall()
         grouped = {}
         for row in rows:
-            record = self._row_to_record(row)
+            record = ProxyDBRecord(
+                id=row["id"],
+                protocol=row["protocol"],
+                name=row["name"],
+                address=row["address"],
+                port=row["port"],
+                link=row["link"],
+                latency_ms=row["latency_ms"],
+                fail_count=0,
+                subscription_id=row["subscription_id"],
+                last_check_time="",
+                last_success_time="",
+                created_at=row["created_at"],
+            )
             grouped.setdefault(record.subscription_id, []).append(record)
         return grouped
 
-    async def get_stats(self) -> dict:
-        """获取统计信息
+    def _invalidate_stats(self) -> None:
+        """标记统计缓存需要刷新"""
+        self._stats_dirty = True
 
-        total: 订阅源地址数量（有多少个订阅源URL）
-        available: 数据库中检测通过的可用节点数
+    async def get_stats(self) -> dict:
+        """获取统计信息（带内存缓存）
+
+        total: 订阅源数量
+        available: 可用节点数
+        avg_latency_ms: 平均延迟
+        protocol_distribution: 协议分布
+
+        使用一条 SQL 合并查询，减少 4 次独立数据库操作为 2 次（subscriptions + proxies）
         """
+        if not self._stats_dirty and self._stats_cache is not None:
+            return self._stats_cache
+
         cursor = await self._db.execute("SELECT COUNT(*) as total FROM subscriptions")
         total = (await cursor.fetchone())["total"]
 
-        cursor = await self._db.execute(
-            "SELECT COUNT(*) as available FROM proxies WHERE latency_ms > 0"
-        )
-        available = (await cursor.fetchone())["available"]
-
-        cursor = await self._db.execute(
-            "SELECT AVG(latency_ms) as avg_latency FROM proxies WHERE latency_ms > 0"
-        )
-        avg_latency = (await cursor.fetchone())["avg_latency"] or 0
-
-        cursor = await self._db.execute(
-            "SELECT protocol, COUNT(*) as count FROM proxies GROUP BY protocol"
-        )
+        # 一条 SQL 同时获取可用数、平均延迟和协议分布
+        cursor = await self._db.execute("""
+            SELECT
+                COUNT(*) as available,
+                AVG(latency_ms) as avg_latency,
+                protocol
+            FROM proxies WHERE latency_ms > 0
+            GROUP BY protocol
+        """)
         rows = await cursor.fetchall()
-        protocol_dist = {row["protocol"]: row["count"] for row in rows}
+        available = sum(row["available"] for row in rows)
+        avg_latency = sum(row["available"] * (row["avg_latency"] or 0) for row in rows) / available if available > 0 else 0
+        protocol_dist = {row["protocol"]: row["available"] for row in rows}
 
-        return {
+        self._stats_cache = {
             "total": total,
             "available": available,
             "avg_latency_ms": round(avg_latency, 1),
             "protocol_distribution": protocol_dist,
         }
+        self._stats_dirty = False
+        return self._stats_cache
 
     async def get_last_check_time(self) -> str:
         """获取最近一次检测时间"""
@@ -597,18 +726,40 @@ class ProxyDatabase:
         await self._db.commit()
         return cursor.rowcount > 0
 
-    async def update_instance_total_count(self, source_id: int, count: int) -> None:
-        """更新服务实例源最新一次获取的已连接节点数"""
+    async def batch_update_instance_meta(self, source_id: int,
+                                           total_count: int = None,
+                                           fetch_status: str = None) -> None:
+        """批量更新服务实例源元信息（total_count + fetch_status），单次 commit"""
+        updates = []
+        params = []
+        if total_count is not None:
+            updates.append("total_count = ?")
+            params.append(total_count)
+        if fetch_status is not None:
+            updates.append("fetch_status = ?")
+            params.append(fetch_status)
+        if not updates:
+            return
+        params.append(source_id)
         await self._db.execute(
-            "UPDATE instance_sources SET total_count = ? WHERE id = ?",
-            (count, source_id),
+            f"UPDATE instance_sources SET {', '.join(updates)} WHERE id = ?", params
         )
         await self._db.commit()
 
-    async def update_instance_fetch_status(self, source_id: int, status: str) -> None:
-        """更新服务实例源拉取状态: idle / updating / success / failed"""
+    # ---- 设置（key-value） ----
+
+    async def get_setting(self, key: str, default: str = "") -> str:
+        """获取设置值，不存在则返回 default"""
+        cursor = await self._db.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        )
+        row = await cursor.fetchone()
+        return row["value"] if row else default
+
+    async def set_setting(self, key: str, value: str) -> None:
+        """设置值（INSERT OR REPLACE）"""
         await self._db.execute(
-            "UPDATE instance_sources SET fetch_status = ? WHERE id = ?",
-            (status, source_id),
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (key, value),
         )
         await self._db.commit()

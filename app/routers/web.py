@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import asdict
 
 from fastapi import APIRouter, Request
 
@@ -23,23 +22,24 @@ async def index(request: Request):
     templates = get_templates()
     scheduler = get_scheduler()
 
-    # 并行查询所有数据
+    # 并行查询（移除 get_all_proxies，页面只使用 grouped 数据）
     results = await asyncio.gather(
-        db.get_all_proxies(),
         db.get_stats(),
         db.get_all_subscriptions(),
         db.get_proxies_grouped_by_subscription(config.check.latency_threshold),
         db.get_check_urls(),
         db.get_all_instance_sources(),
     )
-    proxies, stats, subscriptions, grouped, check_urls, instance_sources = results
+    stats, subscriptions, grouped, check_urls, instance_sources = results
 
     # 过滤包含 nethub 的订阅源（内部地址不在管理界面展示）
     subscriptions = [s for s in subscriptions if "nethub" not in s.url.lower()]
 
-    # 序列化
+    # 序列化（仅包含 JS 需要的字段，减少序列化开销）
     instance_sources_json = json.dumps(
-        [dict(asdict(s)) for s in instance_sources],
+        [{"id": s.id, "base_url": s.base_url, "username": s.username, "password": s.password,
+          "crontab": s.crontab, "latency_threshold": s.latency_threshold,
+          "max_concurrent": s.max_concurrent, "enabled": s.enabled} for s in instance_sources],
         ensure_ascii=False,
     )
 
@@ -49,7 +49,10 @@ async def index(request: Request):
         sub_available_counts[sub.id] = len(grouped.get(sub.id, []))
 
     subscriptions_json = json.dumps(
-        [dict(asdict(s), available_count=sub_available_counts.get(s.id, 0)) for s in subscriptions],
+        [{"id": s.id, "url": s.url, "crontab": s.crontab,
+          "latency_threshold": s.latency_threshold, "max_retries": s.max_retries,
+          "max_concurrent": s.max_concurrent, "enabled": s.enabled,
+          "available_count": sub_available_counts.get(s.id, 0)} for s in subscriptions],
         ensure_ascii=False,
     )
 
@@ -57,7 +60,6 @@ async def index(request: Request):
         request,
         "index.html",
         {
-            "proxies": proxies,
             "stats": stats,
             "subscriptions": subscriptions,
             "subscriptions_json": subscriptions_json,
@@ -67,6 +69,7 @@ async def index(request: Request):
             "instance_sources_json": instance_sources_json,
             "grouped": grouped,
             "latency_threshold": config.check.latency_threshold,
+            "max_proxies": config.scheduler.max_proxies,
             "last_fetch_time": scheduler.last_fetch_time,
             "last_verify_time": scheduler.last_verify_time,
         },
