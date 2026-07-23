@@ -32,7 +32,8 @@ class TaskScheduler:
         self._verifying = False
         self._verifying_subs: set[int] = set()  # 正在验证的订阅 ID 集合，防止并发
         self._last_instance_sub_urls: list[str] = []  # 最近一次实例源获取的订阅地址缓存
-        self._fetch_semaphore = asyncio.Semaphore(5)  # 限制同时拉取的订阅数量，避免资源耗尽
+        self._fetch_queue: asyncio.Queue | None = None  # 队列式更新
+        self._fetch_worker_running = False
 
     def start(self) -> None:
         """注册默认定时任务并启动调度器"""
@@ -122,10 +123,10 @@ class TaskScheduler:
         logger.info("调度器已关闭")
 
     async def _fetch_single_subscription(self, sub_id: int) -> None:
-        """拉取单个订阅并检测入库（并发检测 + 批量数据库写入）
+        """拉取单个订阅并检测入库
 
         节点绑定 subscription_id，已存在于其他订阅则跳过不更新。
-        拉取完成后同时验证该订阅下所有已入库节点。
+        拉取完成后快速验证该订阅下已入库节点。
         """
         sub = await self.db.get_subscription_by_id(sub_id)
         if not sub or not sub.enabled:
@@ -139,7 +140,6 @@ class TaskScheduler:
             proxies = parse_subscription(content)
             if not proxies:
                 logger.warning("订阅 #%d: 未解析到任何节点", sub.id)
-                # 空节点天数+1、总数=0、状态=success，合并为一次 commit
                 await self.db.increment_empty_days(sub_id)
                 await self.db.batch_update_subscription_meta(sub_id, total_count=0, fetch_status="success")
                 return
@@ -151,7 +151,7 @@ class TaskScheduler:
             if socks4_count:
                 logger.info("订阅 #%d: 自动移除 %d 个 socks4 节点", sub_id, socks4_count)
 
-            # 使用共享 checker 检测所有节点延迟（复用 HTTP session）
+            # 使用共享 checker 检测所有节点延迟
             links = [p.link for p in proxies]
             logger.info("订阅 #%d: 开始检测 %d 个节点延迟...", sub.id, len(links))
             results = await self.checker.check_batch(links)
@@ -159,35 +159,29 @@ class TaskScheduler:
 
             # 批量处理检测结果
             threshold = sub.latency_threshold
-            latency_updates = []   # [(proxy_id, latency), ...]
-            delete_ids = []        # [proxy_id, ...]  已入库但延迟超标需删除的节点
-            new_proxies = []       # [(ProxyInfo, latency, sub_id), ...] 待批量插入的新节点
+            latency_updates = []
+            delete_ids = []
+            new_proxies = []
             skipped = 0
 
-            # 批量查询所有解析节点的 link 是否已存在于数据库，避免 N+1 查询
             existing_map = await self.db.get_proxies_by_links(links)
 
             for proxy in proxies:
                 latency = results.get(proxy.link)
 
                 if latency is None:
-                    # 检测失败 - 不入库，跳过
                     skipped += 1
                     continue
 
                 existing = existing_map.get(proxy.link)
                 if existing:
-                    # 节点已存在于数据库中（可能属于其他订阅）
-                    # 不更新、不转移，仅更新延迟
                     if latency <= threshold:
                         latency_updates.append((existing.id, latency))
                     else:
-                        # 延迟超标 - 如果属于当前订阅则删除，否则仅跳过
                         if existing.subscription_id == sub_id:
                             delete_ids.append(existing.id)
                         skipped += 1
                 else:
-                    # 新节点 - 延迟达标才入库
                     if latency <= threshold:
                         new_proxies.append((proxy, latency, sub_id))
                     else:
@@ -197,16 +191,13 @@ class TaskScheduler:
                         sub.id, len(new_proxies), len(latency_updates), len(delete_ids), skipped)
 
             # 批量写入数据库
-            logger.info("订阅 #%d: 开始写入数据库 - 新增 %d, 更新 %d, 删除 %d",
-                        sub.id, len(new_proxies), len(latency_updates), len(delete_ids))
             added = await self.db.batch_insert_proxies(new_proxies)
             if latency_updates:
                 await self.db.batch_update_latency(latency_updates)
             if delete_ids:
                 await self.db.batch_delete_proxies(delete_ids)
-            logger.info("订阅 #%d: 数据库写入完成", sub.id)
 
-            # 合并更新订阅源元信息：总数 + 状态 + 重置空天数（单次 commit）
+            # 合并更新订阅源元信息
             await self.db.batch_update_subscription_meta(
                 sub_id,
                 total_count=len(proxies),
@@ -225,20 +216,55 @@ class TaskScheduler:
                 if deleted:
                     logger.info("超出最大条目数 %d，已删除 %d 个最老的节点", max_proxies, deleted)
 
-            # 拉取完成后，同时验证该订阅下所有已入库节点
-            logger.info("订阅 #%d: 开始验证已入库节点...", sub.id)
-            await self.verify_subscription_proxies(sub_id)
+            # 拉取完成后，快速验证该订阅下已入库节点
+            await self._quick_verify_subscription(sub_id)
 
         except Exception as e:
             await self.db.batch_update_subscription_meta(sub_id, fetch_status="failed")
-            # 超时/网络错误只打 warning，其他异常打 error + 堆栈
             if isinstance(e, (asyncio.TimeoutError, TimeoutError, aiohttp.ClientError)):
                 logger.warning("拉取订阅 #%d 失败: %s", sub.id, e)
             else:
                 logger.error("拉取订阅 #%d 异常: %s", sub.id, e, exc_info=True)
 
+    async def _quick_verify_subscription(self, sub_id: int) -> None:
+        """快速验证订阅下已入库节点（仅检测延迟，失败直接删除）
+
+        与 verify_subscription_proxies 不同，此方法不做防重入检查，
+        在拉取完成后立即调用，确保节点状态及时更新。
+        """
+        proxies = await self.db.get_proxies_by_subscription_id(sub_id)
+        if not proxies:
+            return
+
+        logger.info("订阅 #%d: 快速验证 %d 个已入库节点...", sub_id, len(proxies))
+
+        links = [p.link for p in proxies]
+        results = await self.checker.check_batch(links)
+
+        latency_updates = []
+        delete_ids = []
+        for proxy in proxies:
+            latency = results.get(proxy.link)
+            if latency is not None:
+                latency_updates.append((proxy.id, latency))
+            else:
+                delete_ids.append(proxy.id)
+
+        if latency_updates:
+            await self.db.batch_update_latency(latency_updates)
+        if delete_ids:
+            await self.db.batch_delete_proxies(delete_ids)
+
+        self._last_verify_time = datetime.now(timezone(timedelta(hours=8))).isoformat()
+        logger.info("订阅 #%d: 快速验证完成 - 成功 %d, 删除 %d",
+                    sub_id, len(latency_updates), len(delete_ids))
+
     async def fetch_and_check(self) -> None:
-        """手动触发：并行拉取所有启用的订阅和实例源并检测入库"""
+        """手动触发：队列式拉取所有启用的订阅和实例源
+
+        使用 asyncio.Queue 实现队列式更新：一个订阅完成后自动取下一个，
+        避免并发拉取导致资源争抢和内核端口耗尽。
+        """
         if self._fetching:
             logger.info("上一次拉取任务尚未完成，跳过本次")
             return
@@ -252,28 +278,31 @@ class TaskScheduler:
                 logger.warning("没有启用的订阅源或实例源")
                 return
 
-            total_tasks = len(subs) + len(sources)
-            logger.info("开始批量拉取: %d 个订阅源, %d 个实例源, 共 %d 个任务",
-                        len(subs), len(sources), total_tasks)
+            total = len(subs) + len(sources)
+            logger.info("开始队列式拉取: %d 个订阅源, %d 个实例源, 共 %d 个任务",
+                        len(subs), len(sources), total)
 
-            # 使用信号量限制并发数，并添加进度跟踪
-            async def fetch_with_progress(index: int, task_type: str, task_id: int, coro):
-                async with self._fetch_semaphore:
-                    logger.info("[%d/%d] 开始处理 %s #%d", index + 1, total_tasks, task_type, task_id)
-                    try:
-                        await coro
-                        logger.info("[%d/%d] 完成 %s #%d", index + 1, total_tasks, task_type, task_id)
-                    except Exception as e:
-                        logger.error("[%d/%d] %s #%d 异常: %s", index + 1, total_tasks, task_type, task_id, e)
-
-            tasks = []
+            # 构建任务队列
+            queue: asyncio.Queue = asyncio.Queue()
             for i, sub in enumerate(subs):
-                tasks.append(fetch_with_progress(i, "订阅源", sub.id, self._fetch_single_subscription(sub.id)))
+                await queue.put(("订阅源", sub.id, i + 1))
             for i, source in enumerate(sources):
-                tasks.append(fetch_with_progress(len(subs) + i, "实例源", source.id, self._fetch_single_instance_source(source.id)))
+                await queue.put(("实例源", source.id, len(subs) + i + 1))
 
-            await asyncio.gather(*tasks, return_exceptions=True)
-            logger.info("批量拉取完成: 共处理 %d 个任务", total_tasks)
+            # 逐个处理队列中的任务
+            while not queue.empty():
+                task_type, task_id, index = await queue.get()
+                logger.info("[%d/%d] 开始处理 %s #%d", index, total, task_type, task_id)
+                try:
+                    if task_type == "订阅源":
+                        await self._fetch_single_subscription(task_id)
+                    else:
+                        await self._fetch_single_instance_source(task_id)
+                    logger.info("[%d/%d] 完成 %s #%d", index, total, task_type, task_id)
+                except Exception as e:
+                    logger.error("[%d/%d] %s #%d 异常: %s", index, total, task_type, task_id, e)
+
+            logger.info("队列式拉取完成: 共处理 %d 个任务", total)
         except Exception as e:
             logger.error("拉取任务异常: %s", e, exc_info=True)
         finally:

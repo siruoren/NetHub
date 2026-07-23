@@ -453,6 +453,12 @@ class ProxyDatabase:
         if not updates:
             return False
 
+        # 更新 URL 时检查是否与其他订阅冲突
+        if "url" in updates:
+            existing = await self.get_subscription_by_url(updates["url"])
+            if existing and existing.id != sub_id:
+                return False
+
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [sub_id]
         cursor = await self._db.execute(
