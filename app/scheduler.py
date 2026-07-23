@@ -262,8 +262,8 @@ class TaskScheduler:
     async def fetch_and_check(self) -> None:
         """手动触发：队列式拉取所有启用的订阅和实例源
 
-        使用 asyncio.Queue 实现队列式更新：一个订阅完成后自动取下一个，
-        避免并发拉取导致资源争抢和内核端口耗尽。
+        使用 asyncio.Queue + 5 个 worker 并发消费，
+        一个订阅完成后 worker 自动从队列取下一个任务。
         """
         if self._fetching:
             logger.info("上一次拉取任务尚未完成，跳过本次")
@@ -279,7 +279,7 @@ class TaskScheduler:
                 return
 
             total = len(subs) + len(sources)
-            logger.info("开始队列式拉取: %d 个订阅源, %d 个实例源, 共 %d 个任务",
+            logger.info("开始队列式拉取: %d 个订阅源, %d 个实例源, 共 %d 个任务（5并发）",
                         len(subs), len(sources), total)
 
             # 构建任务队列
@@ -289,20 +289,31 @@ class TaskScheduler:
             for i, source in enumerate(sources):
                 await queue.put(("实例源", source.id, len(subs) + i + 1))
 
-            # 逐个处理队列中的任务
-            while not queue.empty():
-                task_type, task_id, index = await queue.get()
-                logger.info("[%d/%d] 开始处理 %s #%d", index, total, task_type, task_id)
-                try:
-                    if task_type == "订阅源":
-                        await self._fetch_single_subscription(task_id)
-                    else:
-                        await self._fetch_single_instance_source(task_id)
-                    logger.info("[%d/%d] 完成 %s #%d", index, total, task_type, task_id)
-                except Exception as e:
-                    logger.error("[%d/%d] %s #%d 异常: %s", index, total, task_type, task_id, e)
+            completed = 0
 
-            logger.info("队列式拉取完成: 共处理 %d 个任务", total)
+            async def worker():
+                nonlocal completed
+                while not queue.empty():
+                    try:
+                        task_type, task_id, index = queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    logger.info("[%d/%d] 开始处理 %s #%d", index, total, task_type, task_id)
+                    try:
+                        if task_type == "订阅源":
+                            await self._fetch_single_subscription(task_id)
+                        else:
+                            await self._fetch_single_instance_source(task_id)
+                        logger.info("[%d/%d] 完成 %s #%d", index, total, task_type, task_id)
+                    except Exception as e:
+                        logger.error("[%d/%d] %s #%d 异常: %s", index, total, task_type, task_id, e)
+                    completed += 1
+
+            # 启动 5 个并发 worker
+            workers = [asyncio.create_task(worker()) for _ in range(min(5, total))]
+            await asyncio.gather(*workers)
+
+            logger.info("队列式拉取完成: 共处理 %d/%d 个任务", completed, total)
         except Exception as e:
             logger.error("拉取任务异常: %s", e, exc_info=True)
         finally:
