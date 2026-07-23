@@ -36,10 +36,7 @@ logger = logging.getLogger(__name__)
 # 默认检测目标 URL（数据库为空时使用）
 DEFAULT_CHECK_URLS = [
     "https://www.google.com/generate_204",
-    "https://www.gstatic.com/generate_204",
-    "https://cp.cloudflare.com/",
-    "https://www.apple.com/library/test/success.html",
-    "https://connectivitycheck.platform.hicloud.com/generate_204",
+
 ]
 
 # 检测 URL 预期响应验证规则
