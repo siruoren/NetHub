@@ -262,8 +262,8 @@ class TaskScheduler:
     async def fetch_and_check(self) -> None:
         """手动触发：队列式拉取所有启用的订阅和实例源
 
-        使用 asyncio.Queue + 5 个 worker 并发消费，
-        一个订阅完成后 worker 自动从队列取下一个任务。
+        5 个 worker 并发消费同一队列，一个任务完成后 worker 立即从队列取下一个，
+        始终保持 5 个并发直到所有任务处理完毕。
         """
         if self._fetching:
             logger.info("上一次拉取任务尚未完成，跳过本次")
@@ -282,22 +282,25 @@ class TaskScheduler:
             logger.info("开始队列式拉取: %d 个订阅源, %d 个实例源, 共 %d 个任务（5并发）",
                         len(subs), len(sources), total)
 
-            # 构建任务队列
+            # 构建任务队列，所有任务入队后放入终止信号
             queue: asyncio.Queue = asyncio.Queue()
             for i, sub in enumerate(subs):
                 await queue.put(("订阅源", sub.id, i + 1))
             for i, source in enumerate(sources):
                 await queue.put(("实例源", source.id, len(subs) + i + 1))
+            # 每个 worker 放一个 None 作为终止信号
+            for _ in range(min(5, total)):
+                await queue.put(None)
 
             completed = 0
 
             async def worker():
                 nonlocal completed
-                while not queue.empty():
-                    try:
-                        task_type, task_id, index = queue.get_nowait()
-                    except asyncio.QueueEmpty:
+                while True:
+                    item = await queue.get()
+                    if item is None:
                         break
+                    task_type, task_id, index = item
                     logger.info("[%d/%d] 开始处理 %s #%d", index, total, task_type, task_id)
                     try:
                         if task_type == "订阅源":
