@@ -260,16 +260,18 @@ class TaskScheduler:
                     sub_id, len(latency_updates), len(delete_ids))
 
     async def fetch_and_check(self) -> None:
-        """手动触发：队列式拉取所有启用的订阅和实例源
+        """手动触发：5 并发队列式拉取所有启用的订阅和实例源
 
-        5 个 worker 并发消费同一队列，一个任务完成后 worker 立即从队列取下一个，
-        始终保持 5 个并发直到所有任务处理完毕。
+        使用 Semaphore(5) 控制并发，一个任务（拉取+检测+验证）完成后，
+        信号量释放，下一个任务立即进入执行，始终保持 5 个并发。
         """
         if self._fetching:
             logger.info("上一次拉取任务尚未完成，跳过本次")
             return
 
         self._fetching = True
+        sem = asyncio.Semaphore(5)  # 最多 5 个并发
+
         try:
             subs = await self.db.get_enabled_subscriptions()
             sources = await self.db.get_enabled_instance_sources()
@@ -282,25 +284,14 @@ class TaskScheduler:
             logger.info("开始队列式拉取: %d 个订阅源, %d 个实例源, 共 %d 个任务（5并发）",
                         len(subs), len(sources), total)
 
-            # 构建任务队列，所有任务入队后放入终止信号
-            queue: asyncio.Queue = asyncio.Queue()
-            for i, sub in enumerate(subs):
-                await queue.put(("订阅源", sub.id, i + 1))
-            for i, source in enumerate(sources):
-                await queue.put(("实例源", source.id, len(subs) + i + 1))
-            # 每个 worker 放一个 None 作为终止信号
-            for _ in range(min(5, total)):
-                await queue.put(None)
+            # 将所有待处理订阅源状态设为 pending
+            for sub in subs:
+                await self.db.batch_update_subscription_meta(sub.id, fetch_status="pending")
 
             completed = 0
 
-            async def worker():
-                nonlocal completed
-                while True:
-                    item = await queue.get()
-                    if item is None:
-                        break
-                    task_type, task_id, index = item
+            async def run_task(index: int, task_type: str, task_id: int):
+                async with sem:
                     logger.info("[%d/%d] 开始处理 %s #%d", index, total, task_type, task_id)
                     try:
                         if task_type == "订阅源":
@@ -310,11 +301,16 @@ class TaskScheduler:
                         logger.info("[%d/%d] 完成 %s #%d", index, total, task_type, task_id)
                     except Exception as e:
                         logger.error("[%d/%d] %s #%d 异常: %s", index, total, task_type, task_id, e)
+                    nonlocal completed
                     completed += 1
 
-            # 启动 5 个并发 worker
-            workers = [asyncio.create_task(worker()) for _ in range(min(5, total))]
-            await asyncio.gather(*workers)
+            tasks = []
+            for i, sub in enumerate(subs):
+                tasks.append(asyncio.create_task(run_task(i + 1, "订阅源", sub.id)))
+            for i, source in enumerate(sources):
+                tasks.append(asyncio.create_task(run_task(len(subs) + i + 1, "实例源", source.id)))
+
+            await asyncio.gather(*tasks)
 
             logger.info("队列式拉取完成: 共处理 %d/%d 个任务", completed, total)
         except Exception as e:
