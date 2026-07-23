@@ -216,48 +216,12 @@ class TaskScheduler:
                 if deleted:
                     logger.info("超出最大条目数 %d，已删除 %d 个最老的节点", max_proxies, deleted)
 
-            # 拉取完成后，快速验证该订阅下已入库节点
-            await self._quick_verify_subscription(sub_id)
-
         except Exception as e:
             await self.db.batch_update_subscription_meta(sub_id, fetch_status="failed")
             if isinstance(e, (asyncio.TimeoutError, TimeoutError, aiohttp.ClientError)):
                 logger.warning("拉取订阅 #%d 失败: %s", sub.id, e)
             else:
                 logger.error("拉取订阅 #%d 异常: %s", sub.id, e, exc_info=True)
-
-    async def _quick_verify_subscription(self, sub_id: int) -> None:
-        """快速验证订阅下已入库节点（仅检测延迟，失败直接删除）
-
-        与 verify_subscription_proxies 不同，此方法不做防重入检查，
-        在拉取完成后立即调用，确保节点状态及时更新。
-        """
-        proxies = await self.db.get_proxies_by_subscription_id(sub_id)
-        if not proxies:
-            return
-
-        logger.info("订阅 #%d: 快速验证 %d 个已入库节点...", sub_id, len(proxies))
-
-        links = [p.link for p in proxies]
-        results = await self.checker.check_batch(links)
-
-        latency_updates = []
-        delete_ids = []
-        for proxy in proxies:
-            latency = results.get(proxy.link)
-            if latency is not None:
-                latency_updates.append((proxy.id, latency))
-            else:
-                delete_ids.append(proxy.id)
-
-        if latency_updates:
-            await self.db.batch_update_latency(latency_updates)
-        if delete_ids:
-            await self.db.batch_delete_proxies(delete_ids)
-
-        self._last_verify_time = datetime.now(timezone(timedelta(hours=8))).isoformat()
-        logger.info("订阅 #%d: 快速验证完成 - 成功 %d, 删除 %d",
-                    sub_id, len(latency_updates), len(delete_ids))
 
     async def fetch_and_check(self) -> None:
         """手动触发：5 并发队列式拉取所有启用的订阅和实例源
@@ -313,6 +277,11 @@ class TaskScheduler:
             await asyncio.gather(*tasks)
 
             logger.info("队列式拉取完成: 共处理 %d/%d 个任务", completed, total)
+
+            # 所有订阅拉取完成后，验证已入库节点可用性
+            if subs:
+                logger.info("开始验证所有已入库节点可用性...")
+                await self.verify_stored_proxies()
         except Exception as e:
             logger.error("拉取任务异常: %s", e, exc_info=True)
         finally:
