@@ -410,19 +410,23 @@ class ProxyDatabase:
             return False
 
     async def batch_insert_verified_proxies(self, items: list[tuple[ProxyInfo, float, int]]) -> int:
-        """批量插入已验证节点，逐条 commit 实时刷新统计"""
+        """批量插入已验证节点，逐条 commit 实时刷新统计
+
+        返回实际插入数量（INSERT OR IGNORE 跳过重复 link 不计入）
+        """
         now = datetime.now(timezone(timedelta(hours=8))).isoformat()
         added = 0
         for proxy, latency, instance_source_id in items:
             try:
-                await self._db.execute(
+                cursor = await self._db.execute(
                     """INSERT OR IGNORE INTO verified_proxies
                        (protocol, name, address, port, link, latency_ms, instance_source_id, created_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (proxy.protocol, proxy.name, proxy.address, proxy.port, proxy.link, latency, instance_source_id, now),
                 )
                 await self._db.commit()
-                added += 1
+                if cursor.rowcount > 0:
+                    added += 1
             except Exception:
                 pass
         self._invalidate_stats()
@@ -433,6 +437,17 @@ class ProxyDatabase:
         cursor = await self._db.execute(
             "SELECT * FROM verified_proxies WHERE instance_source_id = ? ORDER BY latency_ms ASC",
             (instance_source_id,),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_verified_record(row) for row in rows]
+
+    async def get_verified_available_by_instance_id(self, instance_source_id: int, max_latency: float) -> list[ProxyDBRecord]:
+        """获取指定实例源下延迟达标的已验证节点（与订阅源可用节点过滤规则一致）"""
+        cursor = await self._db.execute(
+            """SELECT * FROM verified_proxies
+               WHERE instance_source_id = ? AND latency_ms > 0 AND latency_ms <= ?
+               ORDER BY latency_ms ASC""",
+            (instance_source_id, max_latency),
         )
         rows = await cursor.fetchall()
         return [self._row_to_verified_record(row) for row in rows]

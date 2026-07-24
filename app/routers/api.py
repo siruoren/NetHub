@@ -354,12 +354,13 @@ async def get_proxies_grouped():
 
 @router.get("/verified-proxies/grouped")
 async def get_verified_proxies_grouped():
-    """获取按实例源分组的已验证节点"""
+    """获取按实例源分组的已验证节点（仅延迟达标的）"""
     db = get_db()
+    config = get_config()
     instance_sources = await db.get_all_instance_sources()
     result = {}
     for inst in instance_sources:
-        vp = await db.get_verified_by_instance_id(inst.id)
+        vp = await db.get_verified_available_by_instance_id(inst.id, config.check.latency_threshold)
         if vp:
             result[str(inst.id)] = [_proxy_to_dict(p) for p in vp]
     return {"verified_grouped": result}

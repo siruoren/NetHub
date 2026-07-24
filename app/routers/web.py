@@ -32,10 +32,10 @@ async def index(request: Request):
     )
     stats, subscriptions, grouped, check_urls, instance_sources = results
 
-    # 获取已验证库按实例源分组
+    # 获取已验证库按实例源分组（仅延迟达标的，与订阅源可用节点过滤规则一致）
     verified_grouped = {}
     for inst in instance_sources:
-        vp = await db.get_verified_by_instance_id(inst.id)
+        vp = await db.get_verified_available_by_instance_id(inst.id, config.check.latency_threshold)
         if vp:
             verified_grouped[inst.id] = vp
 
