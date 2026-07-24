@@ -25,7 +25,7 @@
         <div class="card stat-card text-white bg-warning">
             <div class="card-body">
                 <h6 class="card-title"><i class="bi bi-shield-check"></i> 实例节点数</h6>
-                <h3 class="mb-0"><span id="verifiedCount">{{ stats.verified }}</span></h3>
+                <h3 class="mb-0"><span id="verifiedCount">{{ stats.verified }}</span> <small style="font-size:0.5em;opacity:0.7">/ <span id="verifiedTotalCount">{{ stats.verified_total }}</span></small></h3>
             </div>
         </div>
     </div>
@@ -1319,6 +1319,11 @@ async function refreshStats() {
         const verifiedCountEl = document.getElementById('verifiedCount');
         if (verifiedCountEl) {
             verifiedCountEl.textContent = stats.verified || 0;
+        }
+        
+        const verifiedTotalCountEl = document.getElementById('verifiedTotalCount');
+        if (verifiedTotalCountEl) {
+            verifiedTotalCountEl.textContent = stats.verified_total || 0;
         }
         
         const availableCountEl = document.getElementById('availableCount');

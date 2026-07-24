@@ -34,6 +34,7 @@ class TaskScheduler:
         self._last_instance_sub_urls: list[str] = []  # 最近一次实例源获取的订阅地址缓存
         self._fetch_queue: asyncio.Queue | None = None  # 队列式更新
         self._fetch_worker_running = False
+        self._fetching_instances: set[int] = set()  # 正在获取的实例源 ID 集合，防止并发
 
     def start(self) -> None:
         """注册默认定时任务并启动调度器"""
@@ -232,17 +233,19 @@ class TaskScheduler:
                 logger.error("拉取订阅 #%d 异常: %s", sub.id, e, exc_info=True)
 
     async def fetch_and_check(self) -> None:
-        """手动触发：5 并发队列式拉取所有启用的订阅和实例源
+        """手动触发：订阅源和实例源分别使用独立队列并发拉取
 
-        使用 Semaphore(5) 控制并发，一个任务（拉取+检测+验证）完成后，
-        信号量释放，下一个任务立即进入执行，始终保持 5 个并发。
+        订阅源队列：5 并发
+        实例源队列：3 并发
+        两个队列互不影响，独立运行
         """
         if self._fetching:
             logger.info("上一次拉取任务尚未完成，跳过本次")
             return
 
         self._fetching = True
-        sem = asyncio.Semaphore(5)  # 最多 5 个并发
+        sub_sem = asyncio.Semaphore(5)  # 订阅源最多 5 个并发
+        inst_sem = asyncio.Semaphore(3)  # 实例源最多 3 个并发
 
         try:
             subs = await self.db.get_enabled_subscriptions()
@@ -252,39 +255,49 @@ class TaskScheduler:
                 logger.warning("没有启用的订阅源或实例源")
                 return
 
-            total = len(subs) + len(sources)
-            logger.info("开始队列式拉取: %d 个订阅源, %d 个实例源, 共 %d 个任务（5并发）",
-                        len(subs), len(sources), total)
+            logger.info("开始独立队列拉取: %d 个订阅源(5并发), %d 个实例源(3并发)",
+                        len(subs), len(sources))
 
             # 将所有待处理订阅源状态设为 pending
             for sub in subs:
                 await self.db.batch_update_subscription_meta(sub.id, fetch_status="pending")
 
-            completed = 0
-
-            async def run_task(index: int, task_type: str, task_id: int):
-                async with sem:
-                    logger.info("[%d/%d] 开始处理 %s #%d", index, total, task_type, task_id)
+            # 订阅源队列任务
+            async def run_sub_task(index: int, sub_id: int):
+                async with sub_sem:
+                    logger.info("[订阅源 %d/%d] 开始处理 #%d", index, len(subs), sub_id)
                     try:
-                        if task_type == "订阅源":
-                            await self._fetch_single_subscription(task_id)
-                        else:
-                            await self._fetch_single_instance_source(task_id)
-                        logger.info("[%d/%d] 完成 %s #%d", index, total, task_type, task_id)
+                        await self._fetch_single_subscription(sub_id)
+                        logger.info("[订阅源 %d/%d] 完成 #%d", index, len(subs), sub_id)
                     except Exception as e:
-                        logger.error("[%d/%d] %s #%d 异常: %s", index, total, task_type, task_id, e)
-                    nonlocal completed
-                    completed += 1
+                        logger.error("[订阅源 %d/%d] #%d 异常: %s", index, len(subs), sub_id, e)
 
-            tasks = []
+            # 实例源队列任务
+            async def run_inst_task(index: int, source_id: int):
+                async with inst_sem:
+                    logger.info("[实例源 %d/%d] 开始处理 #%d", index, len(sources), source_id)
+                    try:
+                        await self._fetch_single_instance_source(source_id)
+                        logger.info("[实例源 %d/%d] 完成 #%d", index, len(sources), source_id)
+                    except Exception as e:
+                        logger.error("[实例源 %d/%d] #%d 异常: %s", index, len(sources), source_id, e)
+
+            # 创建两个独立的任务组
+            sub_tasks = []
             for i, sub in enumerate(subs):
-                tasks.append(asyncio.create_task(run_task(i + 1, "订阅源", sub.id)))
+                sub_tasks.append(asyncio.create_task(run_sub_task(i + 1, sub.id)))
+
+            inst_tasks = []
             for i, source in enumerate(sources):
-                tasks.append(asyncio.create_task(run_task(len(subs) + i + 1, "实例源", source.id)))
+                inst_tasks.append(asyncio.create_task(run_inst_task(i + 1, source.id)))
 
-            await asyncio.gather(*tasks)
+            # 并行执行两个队列
+            await asyncio.gather(
+                asyncio.gather(*sub_tasks),
+                asyncio.gather(*inst_tasks)
+            )
 
-            logger.info("队列式拉取完成: 共处理 %d/%d 个任务", completed, total)
+            logger.info("独立队列拉取完成")
 
             # 所有订阅拉取完成后，验证已入库节点可用性
             if subs:
@@ -448,10 +461,16 @@ class TaskScheduler:
         4. 检测失败的删除，可达的更新延迟
         5. 全局节点限制检查（订阅+已验证总数不超限，超限优先删订阅源节点）
         """
+        # 防止并发获取同一实例源
+        if source_id in self._fetching_instances:
+            logger.info("实例源 #%d 正在获取中，跳过本次", source_id)
+            return
+
         source = await self.db.get_instance_source_by_id(source_id)
         if not source or not source.enabled:
             return
 
+        self._fetching_instances.add(source_id)
         try:
             logger.info("开始获取实例源 #%d: %s", source.id, source.base_url)
             await self.db.batch_update_instance_meta(source_id, fetch_status="updating")
@@ -512,6 +531,8 @@ class TaskScheduler:
         except Exception as e:
             logger.error("实例源 #%d: 获取过程异常: %s", source_id, e, exc_info=True)
             await self.db.batch_update_instance_meta(source_id, fetch_status="failed")
+        finally:
+            self._fetching_instances.discard(source_id)
 
     async def _verify_instance_verified(self, source_id: int) -> None:
         """验证已验证库中指定实例下所有节点的可用性，检测失败则删除

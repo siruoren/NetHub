@@ -782,12 +782,17 @@ class ProxyDatabase:
         v_cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies WHERE latency_ms > 0")
         v_available = (await v_cursor.fetchone())["cnt"]
 
+        # Total instance nodes (all verified nodes regardless of latency)
+        v_total_cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies")
+        v_total = (await v_total_cursor.fetchone())["cnt"]
+
         self._stats_cache = {
             "total": total,
             "available": available,
             "avg_latency_ms": round(avg_latency, 1),
             "protocol_distribution": protocol_dist,
             "verified": v_available,
+            "verified_total": v_total,
         }
         self._stats_dirty = False
         return self._stats_cache
