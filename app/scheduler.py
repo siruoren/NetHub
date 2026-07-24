@@ -40,6 +40,10 @@ class TaskScheduler:
 
     def start(self) -> None:
         """注册默认定时任务并启动调度器"""
+        if self.scheduler.running:
+            logger.info("调度器已在运行，跳过启动")
+            return
+
         cfg = self.config.scheduler
 
         # 默认验证和清理任务（使用全局间隔配置）
