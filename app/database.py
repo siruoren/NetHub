@@ -111,17 +111,18 @@ class ProxyDatabase:
                 link             TEXT    NOT NULL UNIQUE,
                 latency_ms       REAL    DEFAULT -1,
                 instance_source_id INTEGER NOT NULL DEFAULT 0,
+                instance_node_name TEXT  NOT NULL DEFAULT '',
+                instance_node_address TEXT NOT NULL DEFAULT '',
                 created_at       TEXT    DEFAULT ''
             );
 
             CREATE INDEX IF NOT EXISTS idx_verified_proxies_protocol ON verified_proxies(protocol);
             CREATE INDEX IF NOT EXISTS idx_verified_proxies_instance_id ON verified_proxies(instance_source_id);
             CREATE INDEX IF NOT EXISTS idx_verified_proxies_link ON verified_proxies(link);
-            CREATE INDEX IF NOT EXISTS idx_verified_proxies_inst_node ON verified_proxies(instance_source_id, instance_node_name, instance_node_address);
         """)
         await self._db.commit()
 
-        # 迁移：为 verified_proxies 添加实例节点标识列
+        # 迁移：为旧表 verified_proxies 添加实例节点标识列
         try:
             await self._db.execute("ALTER TABLE verified_proxies ADD COLUMN instance_node_name TEXT NOT NULL DEFAULT ''")
             await self._db.commit()
@@ -129,6 +130,15 @@ class ProxyDatabase:
             pass
         try:
             await self._db.execute("ALTER TABLE verified_proxies ADD COLUMN instance_node_address TEXT NOT NULL DEFAULT ''")
+            await self._db.commit()
+        except Exception:
+            pass
+
+        # 迁移后创建组合索引（列可能由 ALTER TABLE 添加，必须在迁移之后）
+        try:
+            await self._db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_verified_proxies_inst_node ON verified_proxies(instance_source_id, instance_node_name, instance_node_address)"
+            )
             await self._db.commit()
         except Exception:
             pass
