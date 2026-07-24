@@ -1305,6 +1305,35 @@ async function importSubs(id) {
 // 初始化 Bootstrap Tooltip（页面首次加载，等待 DOM + Bootstrap 就绪）
 document.addEventListener('DOMContentLoaded', function() {
     initTooltips();
+    // 启动定时刷新统计信息（每10秒）
+    setInterval(refreshStats, 10000);
 });
+
+// 定时刷新统计信息
+async function refreshStats() {
+    try {
+        const resp = await fetch('/api/stats');
+        const stats = await resp.json();
+        
+        // 更新统计卡片
+        const verifiedCountEl = document.getElementById('verifiedCount');
+        if (verifiedCountEl) {
+            verifiedCountEl.textContent = stats.verified || 0;
+        }
+        
+        const availableCountEl = document.getElementById('availableCount');
+        if (availableCountEl) {
+            availableCountEl.textContent = stats.available || 0;
+        }
+        
+        // 更新平均延迟
+        const avgLatencyEl = document.querySelector('.stat-card.bg-info h3');
+        if (avgLatencyEl) {
+            avgLatencyEl.textContent = Math.round(stats.avg_latency_ms || 0) + ' ms';
+        }
+    } catch (e) {
+        console.error('刷新统计失败:', e);
+    }
+}
 </script>
 {% endblock %}
