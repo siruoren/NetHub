@@ -499,8 +499,9 @@ class ProxyDatabase:
     async def get_subscription_output_proxies(self, max_latency: float) -> list[ProxyDBRecord]:
         """获取对外订阅输出节点列表
 
-        输出所有延迟达标且未失败的节点
+        输出订阅节点库和已验证库中延迟达标的节点，按 link 去重
         """
+        # 获取订阅节点库中的可用节点
         cursor = await self._db.execute(
             """SELECT * FROM proxies
                WHERE latency_ms > 0
@@ -509,8 +510,39 @@ class ProxyDatabase:
                ORDER BY latency_ms ASC""",
             (max_latency,),
         )
-        rows = await cursor.fetchall()
-        return [self._row_to_record(row) for row in rows]
+        proxy_rows = await cursor.fetchall()
+        proxy_records = [self._row_to_record(row) for row in proxy_rows]
+
+        # 获取已验证库中的可用节点
+        v_cursor = await self._db.execute(
+            """SELECT * FROM verified_proxies
+               WHERE latency_ms > 0
+                 AND latency_ms <= ?
+               ORDER BY latency_ms ASC""",
+            (max_latency,),
+        )
+        verified_rows = await v_cursor.fetchall()
+        verified_records = [self._row_to_verified_record(row) for row in verified_rows]
+
+        # 按 link 去重（已验证库优先）
+        seen_links = set()
+        output_proxies = []
+
+        # 先添加已验证库节点
+        for record in verified_records:
+            if record.link not in seen_links:
+                seen_links.add(record.link)
+                output_proxies.append(record)
+
+        # 再添加订阅库节点（跳过已存在的 link）
+        for record in proxy_records:
+            if record.link not in seen_links:
+                seen_links.add(record.link)
+                output_proxies.append(record)
+
+        # 按延迟排序
+        output_proxies.sort(key=lambda x: x.latency_ms)
+        return output_proxies
 
     async def get_proxy_by_link(self, link: str) -> ProxyDBRecord | None:
         """根据 link 查询节点"""
@@ -541,6 +573,29 @@ class ProxyDatabase:
         )
         rows = await cursor.fetchall()
         return {row["link"] for row in rows}
+
+    async def get_proxy_links_set(self, links: list[str]) -> set[str]:
+        """从订阅节点库中查找给定 link 列表中存在的 link，返回存在的 link 集合"""
+        if not links:
+            return set()
+        placeholders = ",".join("?" for _ in links)
+        cursor = await self._db.execute(
+            f"SELECT link FROM proxies WHERE link IN ({placeholders})", links
+        )
+        rows = await cursor.fetchall()
+        return {row["link"] for row in rows}
+
+    async def delete_proxies_by_links(self, links: list[str]) -> int:
+        """根据 link 列表批量删除订阅节点库中的节点，返回删除数量"""
+        if not links:
+            return 0
+        placeholders = ",".join("?" for _ in links)
+        cursor = await self._db.execute(
+            f"DELETE FROM proxies WHERE link IN ({placeholders})", links
+        )
+        await self._db.commit()
+        self._invalidate_stats()
+        return cursor.rowcount
 
     async def delete_proxies_by_subscription_id_and_protocol(self, subscription_id: int, protocol: str) -> int:
         """删除指定订阅源下特定协议的所有节点，返回删除数量"""
@@ -782,12 +837,17 @@ class ProxyDatabase:
         v_cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies WHERE latency_ms > 0")
         v_available = (await v_cursor.fetchone())["cnt"]
 
+        # Total instance nodes (all verified nodes regardless of latency)
+        v_total_cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies")
+        v_total = (await v_total_cursor.fetchone())["cnt"]
+
         self._stats_cache = {
             "total": total,
             "available": available,
             "avg_latency_ms": round(avg_latency, 1),
             "protocol_distribution": protocol_dist,
             "verified": v_available,
+            "verified_total": v_total,
         }
         self._stats_dirty = False
         return self._stats_cache
