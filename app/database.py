@@ -68,7 +68,8 @@ class ProxyDatabase:
                 created_at        TEXT    DEFAULT '',
                 empty_days        INTEGER DEFAULT 0,
                 total_count       INTEGER DEFAULT 0,
-                fetch_status      TEXT    DEFAULT 'idle'
+                fetch_status      TEXT    DEFAULT 'idle',
+                max_nodes         INTEGER DEFAULT 0
             );
 
             CREATE INDEX IF NOT EXISTS idx_subscriptions_url ON subscriptions(url);
@@ -89,7 +90,9 @@ class ProxyDatabase:
                 enabled           INTEGER DEFAULT 1,
                 created_at        TEXT    DEFAULT '',
                 total_count       INTEGER DEFAULT 0,
-                fetch_status      TEXT    DEFAULT 'idle'
+                fetch_status      TEXT    DEFAULT 'idle',
+                connected_count   INTEGER DEFAULT 0,
+                max_nodes         INTEGER DEFAULT 0
             );
 
             CREATE INDEX IF NOT EXISTS idx_instance_sources_base_url ON instance_sources(base_url);
@@ -155,6 +158,23 @@ class ProxyDatabase:
             pass
         try:
             await self._db.execute("ALTER TABLE subscriptions ADD COLUMN fetch_status TEXT DEFAULT 'idle'")
+            await self._db.commit()
+        except Exception:
+            pass
+        try:
+            await self._db.execute("ALTER TABLE subscriptions ADD COLUMN max_nodes INTEGER DEFAULT 0")
+            await self._db.commit()
+        except Exception:
+            pass
+
+        # 迁移：为 instance_sources 表添加新列
+        try:
+            await self._db.execute("ALTER TABLE instance_sources ADD COLUMN connected_count INTEGER DEFAULT 0")
+            await self._db.commit()
+        except Exception:
+            pass
+        try:
+            await self._db.execute("ALTER TABLE instance_sources ADD COLUMN max_nodes INTEGER DEFAULT 0")
             await self._db.commit()
         except Exception:
             pass
@@ -639,6 +659,7 @@ class ProxyDatabase:
             empty_days=row["empty_days"] if "empty_days" in row.keys() else 0,
             total_count=row["total_count"] if "total_count" in row.keys() else 0,
             fetch_status=row["fetch_status"] if "fetch_status" in row.keys() else "idle",
+            max_nodes=row["max_nodes"] if "max_nodes" in row.keys() else 0,
         )
 
     # ---- 订阅管理 ----
@@ -685,9 +706,31 @@ class ProxyDatabase:
         rows = await cursor.fetchall()
         return [self._row_to_subscription(row) for row in rows]
 
+    async def enforce_max_subscription_proxies(self, sub_id: int, max_count: int) -> int:
+        """执行订阅源节点入库限制，超出则优先删除延迟最大、入库最老的节点，返回删除数量"""
+        if max_count <= 0:
+            return 0
+        cursor = await self._db.execute(
+            "SELECT COUNT(*) as cnt FROM proxies WHERE subscription_id = ?", (sub_id,)
+        )
+        total = (await cursor.fetchone())["cnt"]
+        if total <= max_count:
+            return 0
+        excess = total - max_count
+        cursor = await self._db.execute(
+            """DELETE FROM proxies WHERE id IN (
+                SELECT id FROM proxies WHERE subscription_id = ?
+                ORDER BY latency_ms DESC, created_at ASC LIMIT ?
+            )""",
+            (sub_id, excess),
+        )
+        await self._db.commit()
+        self._invalidate_stats()
+        return cursor.rowcount
+
     async def update_subscription(self, sub_id: int, **kwargs) -> bool:
         """更新订阅源，支持部分字段更新"""
-        allowed = {"url", "crontab", "latency_threshold", "max_retries", "max_concurrent", "enabled"}
+        allowed = {"url", "crontab", "latency_threshold", "max_retries", "max_concurrent", "enabled", "max_nodes"}
         updates = {}
         for k, v in kwargs.items():
             if k in allowed:
@@ -914,6 +957,8 @@ class ProxyDatabase:
             created_at=row["created_at"],
             total_count=row["total_count"] if "total_count" in row.keys() else 0,
             fetch_status=row["fetch_status"] if "fetch_status" in row.keys() else "idle",
+            connected_count=row["connected_count"] if "connected_count" in row.keys() else 0,
+            max_nodes=row["max_nodes"] if "max_nodes" in row.keys() else 0,
         )
 
     async def add_instance_source(self, base_url: str, username: str, password: str,
@@ -959,9 +1004,41 @@ class ProxyDatabase:
         rows = await cursor.fetchall()
         return [self._row_to_instance_source(row) for row in rows]
 
+    async def enforce_max_verified_proxies(self, instance_source_id: int, max_count: int) -> int:
+        """执行实例已验证节点入库限制，超出则优先删除延迟最高、入库最久的节点，返回删除数量"""
+        if max_count <= 0:
+            return 0
+        cursor = await self._db.execute(
+            "SELECT COUNT(*) as cnt FROM verified_proxies WHERE instance_source_id = ?",
+            (instance_source_id,),
+        )
+        total = (await cursor.fetchone())["cnt"]
+        if total <= max_count:
+            return 0
+        excess = total - max_count
+        cursor = await self._db.execute(
+            """DELETE FROM verified_proxies WHERE id IN (
+                SELECT id FROM verified_proxies WHERE instance_source_id = ?
+                ORDER BY latency_ms DESC, created_at ASC LIMIT ?
+            )""",
+            (instance_source_id, excess),
+        )
+        await self._db.commit()
+        self._invalidate_stats()
+        return cursor.rowcount
+
+    async def get_verified_count_by_instance_id(self, instance_source_id: int) -> int:
+        """获取指定实例源的已验证节点总数"""
+        cursor = await self._db.execute(
+            "SELECT COUNT(*) as cnt FROM verified_proxies WHERE instance_source_id = ?",
+            (instance_source_id,),
+        )
+        row = await cursor.fetchone()
+        return row["cnt"] if row else 0
+
     async def update_instance_source(self, source_id: int, **kwargs) -> bool:
         """更新服务实例源，支持部分字段更新"""
-        allowed = {"base_url", "username", "password", "crontab", "latency_threshold", "max_concurrent", "enabled"}
+        allowed = {"base_url", "username", "password", "crontab", "latency_threshold", "max_concurrent", "enabled", "max_nodes"}
         updates = {}
         for k, v in kwargs.items():
             if k in allowed:
@@ -991,8 +1068,9 @@ class ProxyDatabase:
 
     async def batch_update_instance_meta(self, source_id: int,
                                            total_count: int = None,
-                                           fetch_status: str = None) -> None:
-        """批量更新服务实例源元信息（total_count + fetch_status），单次 commit"""
+                                           fetch_status: str = None,
+                                           connected_count: int = None) -> None:
+        """批量更新服务实例源元信息，单次 commit"""
         updates = []
         params = []
         if total_count is not None:
@@ -1001,6 +1079,9 @@ class ProxyDatabase:
         if fetch_status is not None:
             updates.append("fetch_status = ?")
             params.append(fetch_status)
+        if connected_count is not None:
+            updates.append("connected_count = ?")
+            params.append(connected_count)
         if not updates:
             return
         params.append(source_id)

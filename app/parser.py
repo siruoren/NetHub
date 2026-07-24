@@ -688,12 +688,13 @@ def _strings_similar(s1: str, s2: str, threshold: float = 0.5) -> bool:
 
 async def fetch_connected_proxies(
     base_url: str, username: str, password: str,
-) -> tuple[list[ProxyInfo], list[str]]:
+) -> tuple[list[ProxyInfo], list[str], int]:
     """从服务实例获取所有已连接节点的分享链接和订阅地址列表
 
-    返回: (matched_proxies, subscription_urls)
+    返回: (matched_proxies, subscription_urls, connected_node_count)
     - matched_proxies: 匹配成功的 ProxyInfo 列表
     - subscription_urls: 服务实例中所有订阅源的地址 URL 列表
+    - connected_node_count: 服务实例 API 返回的实际已连接节点数
 
     流程：
     1. 登录服务实例
@@ -707,8 +708,9 @@ async def fetch_connected_proxies(
         connected_nodes, subscriptions = await get_instance_connected_nodes(
             session, headers, base_url,
         )
+        connected_node_count = len(connected_nodes)
         logger.info("服务实例 %s: 已连接 %d 个节点, 共 %d 个订阅源",
-                     base_url, len(connected_nodes), len(subscriptions))
+                     base_url, connected_node_count, len(subscriptions))
 
         # 提取所有订阅源地址 URL
         subscription_urls = [
@@ -800,8 +802,8 @@ async def fetch_connected_proxies(
                     matched_node_ids.add(conn_node["id"])
                     matched_proxies.append(best_match)
 
-        logger.info("服务实例 %s: 共匹配到 %d 个已连接节点配置, 发现 %d 个订阅源",
-                     base_url, len(matched_proxies), len(subscription_urls))
-        return matched_proxies, subscription_urls
+        logger.info("服务实例 %s: 共匹配到 %d 个已连接节点配置(实际已连接 %d), 发现 %d 个订阅源",
+                     base_url, len(matched_proxies), connected_node_count, len(subscription_urls))
+        return matched_proxies, subscription_urls, connected_node_count
     finally:
         await session.close()

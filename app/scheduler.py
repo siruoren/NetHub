@@ -218,6 +218,14 @@ class TaskScheduler:
             logger.info("订阅 #%d: 拉取完成 - 新增 %d, 更新延迟 %d, 跳过 %d, 总解析 %d",
                         sub.id, added, len(latency_updates), skipped, len(proxies))
 
+            # 订阅节点限制检查（该订阅入库节点不超限）
+            max_nodes = sub.max_nodes
+            if max_nodes > 0:
+                deleted = await self.db.enforce_max_subscription_proxies(sub_id, max_nodes)
+                if deleted:
+                    logger.info("订阅 #%d: 超出订阅节点限制 %d，删除 %d 个延迟最高/入库最老的节点",
+                                sub_id, max_nodes, deleted)
+
             # 强制执行全局节点限制（订阅+已验证总数不超限，超限优先删订阅源节点）
             max_proxies = self.config.scheduler.max_proxies
             if max_proxies > 0:
@@ -456,10 +464,12 @@ class TaskScheduler:
 
         流程：
         1. 登录实例获取已连接节点和订阅地址列表
-        2. 增量插入：已有节点跳过（INSERT OR IGNORE），新节点入已验证库（延迟默认-1）
-        3. 全量验证：检测已验证库中该实例下所有节点的延迟
-        4. 检测失败的删除，可达的更新延迟
-        5. 全局节点限制检查（订阅+已验证总数不超限，超限优先删订阅源节点）
+        2. 保存已连接数（connected_count）到数据库
+        3. 增量插入：已有节点跳过（INSERT OR IGNORE），新节点入已验证库（延迟默认-1）
+        4. 全量验证：检测已验证库中该实例下所有节点的延迟
+        5. 检测失败的删除，可达的更新延迟
+        6. 实例节点限制检查（该实例已验证节点不超限，超限删延迟最高+入库最久的）
+        7. 全局节点限制检查（订阅+已验证总数不超限，超限优先删订阅源节点）
         """
         # 防止并发获取同一实例源
         if source_id in self._fetching_instances:
@@ -477,7 +487,7 @@ class TaskScheduler:
 
             # Add overall timeout to prevent hanging
             try:
-                proxies, subscription_urls = await asyncio.wait_for(
+                proxies, subscription_urls, connected_count = await asyncio.wait_for(
                     fetch_connected_proxies(
                         source.base_url, source.username, source.password,
                     ),
@@ -491,9 +501,11 @@ class TaskScheduler:
             # 缓存订阅地址列表，供手工导入时使用
             self._last_instance_sub_urls = subscription_urls
 
-            connected_count = len(proxies)
-            logger.info("实例源 #%d: 已连接 %d 个节点, 发现 %d 个订阅源",
-                        source.id, connected_count, len(subscription_urls))
+            logger.info("实例源 #%d: 实际已连接 %d 个节点，匹配到 %d 个配置, 发现 %d 个订阅源",
+                        source.id, connected_count, len(proxies), len(subscription_urls))
+
+            # 保存已连接数（最新一次实例实际已连接的节点数，来自实例API而非匹配数）
+            await self.db.batch_update_instance_meta(source_id, connected_count=connected_count)
 
             if connected_count > 0:
                 # 检查这些节点是否在订阅节点库中存在，如果存在则从订阅库删除
@@ -519,6 +531,14 @@ class TaskScheduler:
                 # 无已连接节点，清空该实例的已验证记录
                 await self.db.delete_verified_by_instance_id(source_id)
 
+            # 实例节点限制检查（该实例已验证节点不超限）
+            max_nodes = source.max_nodes
+            if max_nodes > 0:
+                deleted = await self.db.enforce_max_verified_proxies(source_id, max_nodes)
+                if deleted:
+                    logger.info("实例源 #%d: 超出实例节点限制 %d，删除 %d 个延迟最高/入库最久的节点",
+                                source_id, max_nodes, deleted)
+
             # 全局节点限制检查（订阅+已验证总数不超限，超限优先删订阅源节点）
             max_proxies = self.config.scheduler.max_proxies
             if max_proxies > 0:
@@ -527,10 +547,10 @@ class TaskScheduler:
                     logger.info("全局节点限制 %d，优先删除 %d 个订阅源节点", max_proxies, deleted)
 
             # 更新元信息：已入库数 = 已验证库中该实例下的总量
-            verified = await self.db.get_verified_by_instance_id(source_id)
+            verified_count = await self.db.get_verified_count_by_instance_id(source_id)
             await self.db.batch_update_instance_meta(
                 source_id,
-                total_count=len(verified),
+                total_count=verified_count,
                 fetch_status="success",
             )
 
@@ -616,7 +636,7 @@ class TaskScheduler:
             return 0
 
         # 获取实例源的订阅地址列表
-        _, subscription_urls = await fetch_connected_proxies(
+        _, subscription_urls, _ = await fetch_connected_proxies(
             source.base_url, source.username, source.password,
         )
 

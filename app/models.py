@@ -55,6 +55,7 @@ class SubscriptionRecord:
     empty_days: int  # 连续节点数为0的天数
     total_count: int  # 最新一次拉取的节点地址总数
     fetch_status: str  # 拉取状态: idle / updating / success / failed
+    max_nodes: int  # 该订阅源最大入库节点数，0=不限制
 
 
 @dataclass
@@ -69,5 +70,7 @@ class InstanceSourceRecord:
     max_concurrent: int  # 异步最大并发数
     enabled: bool  # 是否启用
     created_at: str  # ISO8601
-    total_count: int  # 最新一次获取的节点总数
+    total_count: int  # 最新一次获取的节点总数（已验证库中该实例的节点数）
     fetch_status: str  # 拉取状态: idle / updating / success / failed
+    connected_count: int  # 最新一次实例实际已连接的节点数
+    max_nodes: int  # 该实例最大已验证入库节点数，0=不限制

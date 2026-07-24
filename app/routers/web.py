@@ -49,7 +49,9 @@ async def index(request: Request):
     instance_sources_json = json.dumps(
         [{"id": s.id, "base_url": s.base_url, "username": s.username, "password": s.password,
           "crontab": s.crontab, "latency_threshold": s.latency_threshold,
-          "max_concurrent": s.max_concurrent, "enabled": s.enabled} for s in instance_sources],
+          "max_concurrent": s.max_concurrent, "enabled": s.enabled,
+          "max_nodes": s.max_nodes, "connected_count": s.connected_count,
+          "total_count": s.total_count} for s in instance_sources],
         ensure_ascii=False,
     )
 
@@ -62,9 +64,13 @@ async def index(request: Request):
         [{"id": s.id, "url": s.url, "crontab": s.crontab,
           "latency_threshold": s.latency_threshold, "max_retries": s.max_retries,
           "max_concurrent": s.max_concurrent, "enabled": s.enabled,
-          "available_count": sub_available_counts.get(s.id, 0)} for s in subscriptions],
+          "available_count": sub_available_counts.get(s.id, 0),
+          "max_nodes": s.max_nodes} for s in subscriptions],
         ensure_ascii=False,
     )
+
+    # 计算所有实例源的节点限制总和
+    instance_max_nodes = sum(inst.max_nodes for inst in instance_sources if inst.max_nodes > 0)
 
     return templates.TemplateResponse(
         request,
@@ -82,6 +88,7 @@ async def index(request: Request):
             "verified_total_counts": verified_total_counts,
             "latency_threshold": config.check.latency_threshold,
             "max_proxies": config.scheduler.max_proxies,
+            "instance_max_nodes": instance_max_nodes,
             "last_fetch_time": scheduler.last_fetch_time,
             "last_verify_time": scheduler.last_verify_time,
         },
