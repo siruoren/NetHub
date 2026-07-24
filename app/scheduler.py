@@ -165,6 +165,7 @@ class TaskScheduler:
             new_proxies = []
             skipped = 0
             verified_skipped = 0
+            threshold_skipped = 0  # 超过阈值的节点数
 
             existing_map = await self.db.get_proxies_by_links(links)
             # 查询已验证库中存在的 link，这些节点不再重复插入订阅库
@@ -189,15 +190,16 @@ class TaskScheduler:
                     else:
                         if existing.subscription_id == sub_id:
                             delete_ids.append(existing.id)
-                        skipped += 1
+                        threshold_skipped += 1
                 else:
                     if latency <= threshold:
                         new_proxies.append((proxy, latency, sub_id))
                     else:
-                        skipped += 1
+                        threshold_skipped += 1
 
-            logger.info("订阅 #%d: 检测结果 - 新增 %d, 更新 %d, 删除 %d, 跳过 %d(已验证库 %d)",
-                        sub.id, len(new_proxies), len(latency_updates), len(delete_ids), skipped, verified_skipped)
+            logger.info("订阅 #%d: 检测结果 - 新增 %d, 更新 %d, 删除 %d, 跳过 %d(检测失败 %d, 超阈值 %d, 已验证库 %d)",
+                        sub.id, len(new_proxies), len(latency_updates), len(delete_ids), 
+                        skipped + threshold_skipped, skipped, threshold_skipped, verified_skipped)
 
             # 批量写入数据库
             added = await self.db.batch_insert_proxies(new_proxies)
