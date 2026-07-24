@@ -505,30 +505,43 @@ class TaskScheduler:
 
         与订阅源验证逻辑一致：可达则更新延迟，不可达则删除
         """
-        proxies = await self.db.get_verified_by_instance_id(source_id)
-        if not proxies:
-            return
+        try:
+            proxies = await self.db.get_verified_by_instance_id(source_id)
+            if not proxies:
+                return
 
-        logger.info("实例源 #%d: 检测 %d 个已验证节点可用性...", source_id, len(proxies))
-        links = [p.link for p in proxies]
-        results = await self.checker.check_batch(links)
+            logger.info("实例源 #%d: 检测 %d 个已验证节点可用性...", source_id, len(proxies))
+            links = [p.link for p in proxies]
+            results = await self.checker.check_batch(links)
 
-        latency_updates = []
-        delete_ids = []
-        for proxy in proxies:
-            latency = results.get(proxy.link)
-            if latency is not None:
-                latency_updates.append((proxy.id, latency))
-            else:
-                # 检测失败直接删除
-                delete_ids.append(proxy.id)
+            latency_updates = []
+            delete_ids = []
+            for proxy in proxies:
+                latency = results.get(proxy.link)
+                if latency is not None:
+                    logger.debug("实例源 #%d: 节点 %s 检测成功，延迟 %dms", source_id, proxy.name[:30], latency)
+                    latency_updates.append((proxy.id, latency))
+                else:
+                    logger.debug("实例源 #%d: 节点 %s 检测失败，将删除", source_id, proxy.name[:30])
+                    # 检测失败直接删除
+                    delete_ids.append(proxy.id)
 
-        if latency_updates:
-            await self.db.batch_update_verified_latency(latency_updates)
-        if delete_ids:
-            await self.db.batch_delete_verified(delete_ids)
-        logger.info("实例源 #%d: 验证完成 - 成功 %d, 删除 %d",
-                    source_id, len(latency_updates), len(delete_ids))
+            if latency_updates:
+                await self.db.batch_update_verified_latency(latency_updates)
+                # Log latency distribution for debugging
+                latencies = [lat for _, lat in latency_updates]
+                if latencies:
+                    avg_latency = sum(latencies) / len(latencies)
+                    min_latency = min(latencies)
+                    max_latency = max(latencies)
+                    logger.info("实例源 #%d: 延迟分布 - 平均 %.1fms, 最小 %.1fms, 最大 %.1fms",
+                                source_id, avg_latency, min_latency, max_latency)
+            if delete_ids:
+                await self.db.batch_delete_verified(delete_ids)
+            logger.info("实例源 #%d: 验证完成 - 成功 %d, 删除 %d",
+                        source_id, len(latency_updates), len(delete_ids))
+        except Exception as e:
+            logger.error("实例源 #%d: 验证异常: %s", source_id, e, exc_info=True)
 
     async def fetch_all_instance_sources(self) -> None:
         """手动触发：获取所有启用的服务实例源的已连接节点数"""
