@@ -31,9 +31,12 @@ class TaskScheduler:
         self._fetching = False
         self._verifying = False
         self._verifying_subs: set[int] = set()  # 正在验证的订阅 ID 集合，防止并发
+        self._verifying_insts: set[int] = set()  # 正在验证的实例源 ID 集合，防止并发
         self._last_instance_sub_urls: list[str] = []  # 最近一次实例源获取的订阅地址缓存
         self._fetch_queue: asyncio.Queue | None = None  # 队列式更新
         self._fetch_worker_running = False
+        self._limit_lock = asyncio.Lock()  # 全局节点限制操作的互斥锁
+        self._db_write_lock = asyncio.Lock()  # 数据库写入操作的互斥锁
 
     def start(self) -> None:
         """注册默认定时任务并启动调度器"""
@@ -220,9 +223,10 @@ class TaskScheduler:
             # 强制执行全局节点限制（订阅+已验证总数不超限，超限优先删订阅源节点）
             max_proxies = self.config.scheduler.max_proxies
             if max_proxies > 0:
-                deleted = await self.db.enforce_max_proxies_with_verified(max_proxies)
-                if deleted:
-                    logger.info("超出全局节点限制 %d，优先删除 %d 个订阅源节点", max_proxies, deleted)
+                async with self._limit_lock:  # 使用互斥锁防止并发冲突
+                    deleted = await self.db.enforce_max_proxies_with_verified(max_proxies)
+                    if deleted:
+                        logger.info("超出全局节点限制 %d，优先删除 %d 个订阅源节点", max_proxies, deleted)
 
         except Exception as e:
             await self.db.batch_update_subscription_meta(sub_id, fetch_status="failed")
@@ -299,6 +303,7 @@ class TaskScheduler:
         """验证已存节点可用性（按订阅源分组批量检测 + 批量数据库写入）
 
         使用 grouped 查询替代全量查询，利用复合索引加速
+        同时验证订阅源节点和实例源节点
         """
         if self._verifying:
             logger.info("上一次验证任务尚未完成，跳过本次")
@@ -306,43 +311,80 @@ class TaskScheduler:
 
         self._verifying = True
         try:
+            # 验证订阅源节点
             grouped = await self.db.get_proxies_grouped_by_subscription(
                 self.config.check.latency_threshold * 2  # 验证时阈值放宽2倍
             )
-            if not grouped:
-                logger.info("数据库中没有可用节点，跳过验证")
-                return
+            if grouped:
+                total = sum(len(ps) for ps in grouped.values())
+                logger.info("开始验证 %d 个订阅源节点（%d 个订阅源）...", total, len(grouped))
 
-            total = sum(len(ps) for ps in grouped.values())
-            logger.info("开始验证 %d 个节点（%d 个订阅源）...", total, len(grouped))
+                all_links = []
+                link_to_proxy = {}  # link → ProxyDBRecord
+                for sub_id, proxies in grouped.items():
+                    for proxy in proxies:
+                        all_links.append(proxy.link)
+                        link_to_proxy[proxy.link] = proxy
 
-            all_links = []
-            link_to_proxy = {}  # link → ProxyDBRecord
-            for sub_id, proxies in grouped.items():
-                for proxy in proxies:
-                    all_links.append(proxy.link)
-                    link_to_proxy[proxy.link] = proxy
+                results = await self.checker.check_batch(all_links)
 
-            results = await self.checker.check_batch(all_links)
+                latency_updates = []
+                delete_ids = []
 
-            latency_updates = []
-            delete_ids = []
+                for link, proxy in link_to_proxy.items():
+                    latency = results.get(link)
+                    if latency is not None:
+                        latency_updates.append((proxy.id, latency))
+                    else:
+                        delete_ids.append(proxy.id)
 
-            for link, proxy in link_to_proxy.items():
-                latency = results.get(link)
-                if latency is not None:
-                    latency_updates.append((proxy.id, latency))
-                else:
-                    delete_ids.append(proxy.id)
+                # 批量写入
+                if latency_updates:
+                    await self.db.batch_update_latency(latency_updates)
+                if delete_ids:
+                    await self.db.batch_delete_proxies(delete_ids)
 
-            # 批量写入
-            if latency_updates:
-                await self.db.batch_update_latency(latency_updates)
-            if delete_ids:
-                await self.db.batch_delete_proxies(delete_ids)
+                logger.info("订阅源节点验证完成: 成功 %d, 删除 %d", len(latency_updates), len(delete_ids))
+            else:
+                logger.info("数据库中没有订阅源节点，跳过订阅源验证")
+
+            # 验证实例源节点（已验证库）
+            verified_all = await self.db.get_all_verified_proxies(
+                self.config.check.latency_threshold * 2  # 验证时阈值放宽2倍
+            )
+            if verified_all:
+                logger.info("开始验证 %d 个实例源节点...", len(verified_all))
+                verified_links = [p.link for p in verified_all]
+                verified_results = await self.checker.check_batch(verified_links)
+
+                verified_latency_updates = []
+                verified_delete_ids = []
+
+                for proxy in verified_all:
+                    latency = verified_results.get(proxy.link)
+                    if latency is not None:
+                        verified_latency_updates.append((proxy.id, latency))
+                    else:
+                        verified_delete_ids.append(proxy.id)
+
+                if verified_latency_updates:
+                    await self.db.batch_update_verified_latency(verified_latency_updates)
+                if verified_delete_ids:
+                    await self.db.batch_delete_verified(verified_delete_ids)
+
+                logger.info("实例源节点验证完成: 成功 %d, 删除 %d", len(verified_latency_updates), len(verified_delete_ids))
+            else:
+                logger.info("数据库中没有实例源节点，跳过实例源验证")
+
+            # 全局节点限制检查（订阅+已验证总数不超限，超限优先删订阅源节点，再删实例节点）
+            max_proxies = self.config.scheduler.max_proxies
+            if max_proxies > 0:
+                async with self._limit_lock:  # 使用互斥锁防止并发冲突
+                    deleted = await self.db.enforce_max_proxies_with_verified(max_proxies)
+                    if deleted:
+                        logger.info("全局节点限制 %d，优先删除 %d 个节点（订阅源优先）", max_proxies, deleted)
 
             self._last_verify_time = datetime.now(timezone(timedelta(hours=8))).isoformat()
-            logger.info("验证完成: 成功 %d, 删除 %d", len(latency_updates), len(delete_ids))
         except Exception as e:
             logger.error("验证任务异常: %s", e, exc_info=True)
         finally:
@@ -446,7 +488,7 @@ class TaskScheduler:
         2. 增量插入：已有节点跳过（INSERT OR IGNORE），新节点入已验证库（延迟默认-1）
         3. 全量验证：检测已验证库中该实例下所有节点的延迟
         4. 检测失败的删除，可达的更新延迟
-        5. 全局节点限制检查（订阅+已验证总数不超限，超限优先删订阅源节点）
+        5. 全局节点限制检查（订阅+已验证总数不超限，超限优先删订阅源节点，再删实例节点）
         """
         source = await self.db.get_instance_source_by_id(source_id)
         if not source or not source.enabled:
@@ -493,13 +535,6 @@ class TaskScheduler:
                 # 无已连接节点，清空该实例的已验证记录
                 await self.db.delete_verified_by_instance_id(source_id)
 
-            # 全局节点限制检查（订阅+已验证总数不超限，超限优先删订阅源节点）
-            max_proxies = self.config.scheduler.max_proxies
-            if max_proxies > 0:
-                deleted = await self.db.enforce_max_proxies_with_verified(max_proxies)
-                if deleted:
-                    logger.info("全局节点限制 %d，优先删除 %d 个订阅源节点", max_proxies, deleted)
-
             # 更新元信息：已入库数 = 已验证库中该实例下的总量
             verified = await self.db.get_verified_by_instance_id(source_id)
             await self.db.batch_update_instance_meta(
@@ -518,6 +553,11 @@ class TaskScheduler:
 
         与订阅源验证逻辑一致：可达则更新延迟，不可达则删除
         """
+        if source_id in self._verifying_insts:
+            logger.info("实例源 #%d 正在验证中，跳过本次", source_id)
+            return
+
+        self._verifying_insts.add(source_id)
         try:
             proxies = await self.db.get_verified_by_instance_id(source_id)
             if not proxies:
@@ -555,6 +595,8 @@ class TaskScheduler:
                         source_id, len(latency_updates), len(delete_ids))
         except Exception as e:
             logger.error("实例源 #%d: 验证异常: %s", source_id, e, exc_info=True)
+        finally:
+            self._verifying_insts.discard(source_id)
 
     async def fetch_all_instance_sources(self) -> None:
         """手动触发：获取所有启用的服务实例源的已连接节点数"""
