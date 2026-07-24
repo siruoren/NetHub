@@ -544,14 +544,20 @@ class TaskScheduler:
     async def _verify_instance_verified(self, source_id: int) -> None:
         """验证已验证库中指定实例下所有节点的可用性，检测失败则删除
 
-        与订阅源验证逻辑一致：可达则更新延迟，不可达则删除
+        使用实例源的延迟阈值过滤：延迟超过阈值的节点也会被删除
         """
         try:
+            source = await self.db.get_instance_source_by_id(source_id)
+            if not source:
+                return
+
             proxies = await self.db.get_verified_by_instance_id(source_id)
             if not proxies:
                 return
 
-            logger.info("实例源 #%d: 检测 %d 个已验证节点可用性...", source_id, len(proxies))
+            max_latency = source.latency_threshold
+            logger.info("实例源 #%d: 检测 %d 个已验证节点可用性（延迟阈值 %.1fms）...", 
+                       source_id, len(proxies), max_latency)
             links = [p.link for p in proxies]
             results = await self.checker.check_batch(links)
 
@@ -560,8 +566,14 @@ class TaskScheduler:
             for proxy in proxies:
                 latency = results.get(proxy.link)
                 if latency is not None:
-                    logger.debug("实例源 #%d: 节点 %s 检测成功，延迟 %dms", source_id, proxy.name[:30], latency)
-                    latency_updates.append((proxy.id, latency))
+                    if latency <= max_latency:
+                        logger.debug("实例源 #%d: 节点 %s 检测成功，延迟 %dms（达标）", 
+                                   source_id, proxy.name[:30], latency)
+                        latency_updates.append((proxy.id, latency))
+                    else:
+                        logger.debug("实例源 #%d: 节点 %s 延迟 %dms 超过阈值 %.1fms，将删除", 
+                                   source_id, proxy.name[:30], latency, max_latency)
+                        delete_ids.append(proxy.id)
                 else:
                     logger.debug("实例源 #%d: 节点 %s 检测失败，将删除", source_id, proxy.name[:30])
                     # 检测失败直接删除
@@ -574,9 +586,9 @@ class TaskScheduler:
                 if latencies:
                     avg_latency = sum(latencies) / len(latencies)
                     min_latency = min(latencies)
-                    max_latency = max(latencies)
+                    max_latency_actual = max(latencies)
                     logger.info("实例源 #%d: 延迟分布 - 平均 %.1fms, 最小 %.1fms, 最大 %.1fms",
-                                source_id, avg_latency, min_latency, max_latency)
+                                source_id, avg_latency, min_latency, max_latency_actual)
             if delete_ids:
                 await self.db.batch_delete_verified(delete_ids)
             logger.info("实例源 #%d: 验证完成 - 成功 %d, 删除 %d",
