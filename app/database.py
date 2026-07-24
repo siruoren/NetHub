@@ -98,6 +98,22 @@ class ProxyDatabase:
                 key   TEXT    PRIMARY KEY,
                 value TEXT    NOT NULL DEFAULT ''
             );
+
+            CREATE TABLE IF NOT EXISTS verified_proxies (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                protocol         TEXT    NOT NULL,
+                name             TEXT    NOT NULL DEFAULT '',
+                address          TEXT    NOT NULL DEFAULT '',
+                port             TEXT    NOT NULL DEFAULT '',
+                link             TEXT    NOT NULL UNIQUE,
+                latency_ms       REAL    DEFAULT -1,
+                instance_source_id INTEGER NOT NULL DEFAULT 0,
+                created_at       TEXT    DEFAULT ''
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_verified_proxies_protocol ON verified_proxies(protocol);
+            CREATE INDEX IF NOT EXISTS idx_verified_proxies_instance_id ON verified_proxies(instance_source_id);
+            CREATE INDEX IF NOT EXISTS idx_verified_proxies_link ON verified_proxies(link);
         """)
         await self._db.commit()
 
@@ -289,6 +305,48 @@ class ProxyDatabase:
         self._invalidate_stats()
         return cursor.rowcount
 
+    async def enforce_max_proxies_with_verified(self, max_count: int) -> int:
+        """全局节点限制（订阅+已验证总数不超限），超限优先删除订阅源节点
+
+        计算 proxies + verified_proxies 总数，超出部分优先从 proxies 删除
+        （延迟最大、最老的先删），proxies 不够删时再删 verified_proxies
+        """
+        if max_count <= 0:
+            return 0
+        p_cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM proxies")
+        proxy_count = (await p_cursor.fetchone())["cnt"]
+        v_cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies")
+        verified_count = (await v_cursor.fetchone())["cnt"]
+        total = proxy_count + verified_count
+        if total <= max_count:
+            return 0
+        excess = total - max_count
+        deleted = 0
+        # 优先删订阅源节点
+        if proxy_count > 0:
+            delete_from_proxies = min(excess, proxy_count)
+            cursor = await self._db.execute(
+                """DELETE FROM proxies WHERE id IN (
+                    SELECT id FROM proxies ORDER BY latency_ms DESC, created_at ASC LIMIT ?
+                )""",
+                (delete_from_proxies,),
+            )
+            await self._db.commit()
+            deleted += cursor.rowcount
+            excess -= cursor.rowcount
+        # proxies 不够删时再删 verified_proxies
+        if excess > 0 and verified_count > 0:
+            cursor = await self._db.execute(
+                """DELETE FROM verified_proxies WHERE id IN (
+                    SELECT id FROM verified_proxies ORDER BY latency_ms DESC, created_at ASC LIMIT ?
+                )""",
+                (excess,),
+            )
+            await self._db.commit()
+            deleted += cursor.rowcount
+        self._invalidate_stats()
+        return deleted
+
     async def delete_proxies_by_subscription_id(self, subscription_id: int) -> int:
         """删除指定订阅源 ID 下的所有节点，返回删除数量"""
         cursor = await self._db.execute(
@@ -316,6 +374,112 @@ class ProxyDatabase:
         )
         rows = await cursor.fetchall()
         return [self._row_to_record(row) for row in rows]
+
+    # ==================== 已验证库操作 ====================
+
+    def _row_to_verified_record(self, row: aiosqlite.Row) -> ProxyDBRecord:
+        """将 verified_proxies 行转为 ProxyDBRecord"""
+        return ProxyDBRecord(
+            id=row["id"],
+            protocol=row["protocol"],
+            name=row["name"],
+            address=row["address"],
+            port=row["port"],
+            link=row["link"],
+            latency_ms=row["latency_ms"],
+            fail_count=0,
+            subscription_id=row["instance_source_id"],
+            last_check_time="",
+            last_success_time="",
+            created_at=row["created_at"] or "",
+        )
+
+    async def insert_verified_proxy(self, proxy: ProxyInfo, latency: float, instance_source_id: int) -> bool:
+        """插入单条已验证节点，已存在则忽略"""
+        now = datetime.now(timezone(timedelta(hours=8))).isoformat()
+        try:
+            await self._db.execute(
+                """INSERT OR IGNORE INTO verified_proxies
+                   (protocol, name, address, port, link, latency_ms, instance_source_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (proxy.protocol, proxy.name, proxy.address, proxy.port, proxy.link, latency, instance_source_id, now),
+            )
+            await self._db.commit()
+            return True
+        except Exception:
+            return False
+
+    async def batch_insert_verified_proxies(self, items: list[tuple[ProxyInfo, float, int]]) -> int:
+        """批量插入已验证节点，逐条 commit 实时刷新统计"""
+        now = datetime.now(timezone(timedelta(hours=8))).isoformat()
+        added = 0
+        for proxy, latency, instance_source_id in items:
+            try:
+                await self._db.execute(
+                    """INSERT OR IGNORE INTO verified_proxies
+                       (protocol, name, address, port, link, latency_ms, instance_source_id, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (proxy.protocol, proxy.name, proxy.address, proxy.port, proxy.link, latency, instance_source_id, now),
+                )
+                await self._db.commit()
+                added += 1
+            except Exception:
+                pass
+        self._invalidate_stats()
+        return added
+
+    async def get_verified_by_instance_id(self, instance_source_id: int) -> list[ProxyDBRecord]:
+        """获取指定实例源下的所有已验证节点"""
+        cursor = await self._db.execute(
+            "SELECT * FROM verified_proxies WHERE instance_source_id = ? ORDER BY latency_ms ASC",
+            (instance_source_id,),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_verified_record(row) for row in rows]
+
+    async def get_all_verified_proxies(self, max_latency: float) -> list[ProxyDBRecord]:
+        """获取所有延迟达标的已验证节点"""
+        cursor = await self._db.execute(
+            """SELECT * FROM verified_proxies
+               WHERE latency_ms > 0 AND latency_ms <= ?
+               ORDER BY latency_ms ASC""",
+            (max_latency,),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_verified_record(row) for row in rows]
+
+    async def delete_verified_by_instance_id(self, instance_source_id: int) -> int:
+        """删除指定实例源下的所有已验证节点"""
+        cursor = await self._db.execute(
+            "DELETE FROM verified_proxies WHERE instance_source_id = ?",
+            (instance_source_id,),
+        )
+        await self._db.commit()
+        self._invalidate_stats()
+        return cursor.rowcount
+
+    async def batch_delete_verified(self, ids: list[int]) -> None:
+        """批量删除已验证节点"""
+        for vid in ids:
+            await self._db.execute("DELETE FROM verified_proxies WHERE id = ?", (vid,))
+            await self._db.commit()
+        self._invalidate_stats()
+
+    async def batch_update_verified_latency(self, updates: list[tuple[int, float]]) -> None:
+        """批量更新已验证节点延迟"""
+        for vid, latency in updates:
+            await self._db.execute(
+                "UPDATE verified_proxies SET latency_ms = ? WHERE id = ?",
+                (latency, vid),
+            )
+            await self._db.commit()
+
+    async def clear_verified_proxies(self) -> int:
+        """清空已验证库"""
+        cursor = await self._db.execute("DELETE FROM verified_proxies")
+        await self._db.commit()
+        self._invalidate_stats()
+        return cursor.rowcount
 
     async def get_subscription_output_proxies(self, max_latency: float) -> list[ProxyDBRecord]:
         """获取对外订阅输出节点列表
@@ -589,11 +753,15 @@ class ProxyDatabase:
         avg_latency = sum(row["available"] * (row["avg_latency"] or 0) for row in rows) / available if available > 0 else 0
         protocol_dist = {row["protocol"]: row["available"] for row in rows}
 
+        v_cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies WHERE latency_ms > 0")
+        v_available = (await v_cursor.fetchone())["cnt"]
+
         self._stats_cache = {
             "total": total,
             "available": available,
             "avg_latency_ms": round(avg_latency, 1),
             "protocol_distribution": protocol_dist,
+            "verified": v_available,
         }
         self._stats_dirty = False
         return self._stats_cache
@@ -727,9 +895,12 @@ class ProxyDatabase:
         return cursor.rowcount > 0
 
     async def delete_instance_source(self, source_id: int) -> bool:
-        """删除服务实例源"""
+        """删除服务实例源及其已验证节点"""
+        # 先删除已验证库中该实例的所有节点
+        await self._db.execute("DELETE FROM verified_proxies WHERE instance_source_id = ?", (source_id,))
         cursor = await self._db.execute("DELETE FROM instance_sources WHERE id = ?", (source_id,))
         await self._db.commit()
+        self._invalidate_stats()
         return cursor.rowcount > 0
 
     async def batch_update_instance_meta(self, source_id: int,

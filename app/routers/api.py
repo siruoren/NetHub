@@ -58,11 +58,17 @@ async def delete_all_proxies():
 async def v2ray_subscription():
     """获取纯文本格式订阅（每行一条原始代理 URI）
 
-    输出所有延迟达标且未失败的节点（含检测通过的实例源节点）
+    输出所有延迟达标且未失败的节点（含已验证库节点，自动去重）
     """
     db = get_db()
     config = get_config()
     proxies = await db.get_subscription_output_proxies(config.check.latency_threshold)
+    verified = await db.get_all_verified_proxies(config.check.latency_threshold)
+    # 去重：已验证库中与订阅源重复的节点不输出
+    existing_links = {p.link for p in proxies}
+    for vp in verified:
+        if vp.link not in existing_links:
+            proxies.append(vp)
     content = generate_v2ray_subscription(proxies)
     return _subscription_response(content, "text/plain")
 
@@ -71,11 +77,17 @@ async def v2ray_subscription():
 async def plain_subscription():
     """获取纯文本格式订阅（每行一条原始代理 URI，参照 subdom.txt 格式）
 
-    输出所有延迟达标且未失败的节点（含检测通过的实例源节点）
+    输出所有延迟达标且未失败的节点（含已验证库节点，自动去重）
     """
     db = get_db()
     config = get_config()
     proxies = await db.get_subscription_output_proxies(config.check.latency_threshold)
+    verified = await db.get_all_verified_proxies(config.check.latency_threshold)
+    # 去重：已验证库中与订阅源重复的节点不输出
+    existing_links = {p.link for p in proxies}
+    for vp in verified:
+        if vp.link not in existing_links:
+            proxies.append(vp)
     content = generate_plain_subscription(proxies)
     return _subscription_response(content, "text/plain")
 
@@ -84,11 +96,17 @@ async def plain_subscription():
 async def clash_subscription():
     """获取 Clash 格式订阅（YAML）
 
-    输出所有延迟达标且未失败的节点（含检测通过的实例源节点）
+    输出所有延迟达标且未失败的节点（含已验证库节点，自动去重）
     """
     db = get_db()
     config = get_config()
     proxies = await db.get_subscription_output_proxies(config.check.latency_threshold)
+    verified = await db.get_all_verified_proxies(config.check.latency_threshold)
+    # 去重：已验证库中与订阅源重复的节点不输出
+    existing_links = {p.link for p in proxies}
+    for vp in verified:
+        if vp.link not in existing_links:
+            proxies.append(vp)
     content = generate_clash_subscription(proxies)
     return _subscription_response(content, "text/yaml")
 
@@ -168,8 +186,8 @@ async def update_max_proxies(body: MaxProxiesBody):
     config.scheduler.max_proxies = max_proxies
     db = get_db()
     await db.set_setting("max_proxies", str(max_proxies))
-    # 立即执行一次限制检查
-    deleted = await db.enforce_max_proxies(max_proxies)
+    # 立即执行一次限制检查（订阅+已验证总数不超限）
+    deleted = await db.enforce_max_proxies_with_verified(max_proxies)
     return {"max_proxies": max_proxies, "deleted": deleted}
 
 
@@ -330,6 +348,29 @@ async def get_proxies_grouped():
     for sub_id, proxies in grouped.items():
         result[str(sub_id)] = [_proxy_to_dict(p) for p in proxies]
     return {"grouped": result}
+
+
+# ---- 已验证库节点 ----
+
+@router.get("/verified-proxies/grouped")
+async def get_verified_proxies_grouped():
+    """获取按实例源分组的已验证节点"""
+    db = get_db()
+    instance_sources = await db.get_all_instance_sources()
+    result = {}
+    for inst in instance_sources:
+        vp = await db.get_verified_by_instance_id(inst.id)
+        if vp:
+            result[str(inst.id)] = [_proxy_to_dict(p) for p in vp]
+    return {"verified_grouped": result}
+
+
+@router.delete("/verified-proxies/{proxy_id}")
+async def delete_verified_proxy(proxy_id: int):
+    """删除指定已验证节点"""
+    db = get_db()
+    await db.batch_delete_verified([proxy_id])
+    return {"message": "deleted"}
 
 
 def _proxy_to_dict(proxy) -> dict:

@@ -32,6 +32,13 @@ async def index(request: Request):
     )
     stats, subscriptions, grouped, check_urls, instance_sources = results
 
+    # 获取已验证库按实例源分组
+    verified_grouped = {}
+    for inst in instance_sources:
+        vp = await db.get_verified_by_instance_id(inst.id)
+        if vp:
+            verified_grouped[inst.id] = vp
+
     # 过滤包含 nethub 的订阅源（内部地址不在管理界面展示）
     subscriptions = [s for s in subscriptions if "nethub" not in s.url.lower()]
 
@@ -68,6 +75,7 @@ async def index(request: Request):
             "instance_sources": instance_sources,
             "instance_sources_json": instance_sources_json,
             "grouped": grouped,
+            "verified_grouped": verified_grouped,
             "latency_threshold": config.check.latency_threshold,
             "max_proxies": config.scheduler.max_proxies,
             "last_fetch_time": scheduler.last_fetch_time,
