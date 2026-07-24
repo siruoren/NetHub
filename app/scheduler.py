@@ -468,8 +468,8 @@ class TaskScheduler:
                 added = await self.db.batch_insert_verified_proxies(verified_items)
                 logger.info("实例源 #%d: 已入库 %d 个节点，开始验证延迟...", source.id, added)
 
-                # 检测已验证库中该实例下所有节点的延迟
-                await self._verify_instance_verified(source_id, source.latency_threshold)
+                # 检测已验证库中该实例下所有节点的可用性
+                await self._verify_instance_verified(source_id)
             else:
                 # 无已连接节点，清空该实例的已验证记录
                 await self.db.delete_verified_by_instance_id(source_id)
@@ -494,13 +494,16 @@ class TaskScheduler:
             await self.db.batch_update_instance_meta(source_id, fetch_status="failed")
             logger.error("获取实例源 #%d 异常: %s", source.id, e, exc_info=True)
 
-    async def _verify_instance_verified(self, source_id: int, threshold: float) -> None:
-        """验证已验证库中指定实例下所有节点的延迟，不达标则删除"""
+    async def _verify_instance_verified(self, source_id: int) -> None:
+        """验证已验证库中指定实例下所有节点的可用性，检测失败则删除
+
+        与订阅源验证逻辑一致：可达则更新延迟，不可达则删除
+        """
         proxies = await self.db.get_verified_by_instance_id(source_id)
         if not proxies:
             return
 
-        logger.info("实例源 #%d: 检测 %d 个已验证节点延迟...", source_id, len(proxies))
+        logger.info("实例源 #%d: 检测 %d 个已验证节点可用性...", source_id, len(proxies))
         links = [p.link for p in proxies]
         results = await self.checker.check_batch(links)
 
@@ -508,16 +511,17 @@ class TaskScheduler:
         delete_ids = []
         for proxy in proxies:
             latency = results.get(proxy.link)
-            if latency is not None and latency <= threshold:
+            if latency is not None:
                 latency_updates.append((proxy.id, latency))
             else:
+                # 检测失败直接删除
                 delete_ids.append(proxy.id)
 
         if latency_updates:
             await self.db.batch_update_verified_latency(latency_updates)
         if delete_ids:
             await self.db.batch_delete_verified(delete_ids)
-        logger.info("实例源 #%d: 验证完成 - 达标 %d, 删除 %d",
+        logger.info("实例源 #%d: 验证完成 - 成功 %d, 删除 %d",
                     source_id, len(latency_updates), len(delete_ids))
 
     async def fetch_all_instance_sources(self) -> None:
