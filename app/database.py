@@ -531,6 +531,17 @@ class ProxyDatabase:
         rows = await cursor.fetchall()
         return {row["link"]: self._row_to_record(row) for row in rows}
 
+    async def get_verified_links_set(self, links: list[str]) -> set[str]:
+        """从已验证库中查找给定 link 列表中存在的 link，返回存在的 link 集合"""
+        if not links:
+            return set()
+        placeholders = ",".join("?" for _ in links)
+        cursor = await self._db.execute(
+            f"SELECT link FROM verified_proxies WHERE link IN ({placeholders})", links
+        )
+        rows = await cursor.fetchall()
+        return {row["link"] for row in rows}
+
     async def delete_proxies_by_subscription_id_and_protocol(self, subscription_id: int, protocol: str) -> int:
         """删除指定订阅源下特定协议的所有节点，返回删除数量"""
         cursor = await self._db.execute(

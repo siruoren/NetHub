@@ -163,14 +163,22 @@ class TaskScheduler:
             delete_ids = []
             new_proxies = []
             skipped = 0
+            verified_skipped = 0
 
             existing_map = await self.db.get_proxies_by_links(links)
+            # 查询已验证库中存在的 link，这些节点不再重复插入订阅库
+            verified_links = await self.db.get_verified_links_set(links)
 
             for proxy in proxies:
                 latency = results.get(proxy.link)
 
                 if latency is None:
                     skipped += 1
+                    continue
+
+                # 已验证库中存在的节点不再重复插入订阅库
+                if proxy.link in verified_links:
+                    verified_skipped += 1
                     continue
 
                 existing = existing_map.get(proxy.link)
@@ -187,8 +195,8 @@ class TaskScheduler:
                     else:
                         skipped += 1
 
-            logger.info("订阅 #%d: 检测结果 - 新增 %d, 更新 %d, 删除 %d, 跳过 %d",
-                        sub.id, len(new_proxies), len(latency_updates), len(delete_ids), skipped)
+            logger.info("订阅 #%d: 检测结果 - 新增 %d, 更新 %d, 删除 %d, 跳过 %d(已验证库 %d)",
+                        sub.id, len(new_proxies), len(latency_updates), len(delete_ids), skipped, verified_skipped)
 
             # 批量写入数据库
             added = await self.db.batch_insert_proxies(new_proxies)
@@ -431,13 +439,13 @@ class TaskScheduler:
             self._add_instance_source_job(source)
 
     async def _fetch_single_instance_source(self, source_id: int) -> None:
-        """从服务实例获取已连接节点，先入已验证库，再验证延迟
+        """从服务实例获取已连接节点，增量入已验证库，再全量验证延迟
 
         流程：
         1. 登录实例获取已连接节点和订阅地址列表
-        2. 先清除该实例下旧记录，将所有已连接节点入已验证库（延迟默认-1）
-        3. 检测已验证库中该实例下所有节点的延迟
-        4. 不达标的从已验证库中删除
+        2. 增量插入：已有节点跳过（INSERT OR IGNORE），新节点入已验证库（延迟默认-1）
+        3. 全量验证：检测已验证库中该实例下所有节点的延迟
+        4. 检测失败的删除，可达的更新延迟
         5. 全局节点限制检查（订阅+已验证总数不超限，超限优先删订阅源节点）
         """
         source = await self.db.get_instance_source_by_id(source_id)
@@ -460,15 +468,13 @@ class TaskScheduler:
                         source.id, connected_count, len(subscription_urls))
 
             if connected_count > 0:
-                # 先清除该实例下旧的已验证记录
-                await self.db.delete_verified_by_instance_id(source_id)
-
-                # 所有已连接节点先入已验证库（延迟默认-1，待后续检测）
+                # 增量插入：已有节点跳过，新节点入已验证库（延迟默认-1）
                 verified_items = [(proxy, -1.0, source_id) for proxy in proxies]
                 added = await self.db.batch_insert_verified_proxies(verified_items)
-                logger.info("实例源 #%d: 已入库 %d 个节点，开始验证延迟...", source.id, added)
+                logger.info("实例源 #%d: 新增入库 %d 个节点（跳过已存在 %d），开始全量验证...",
+                            source.id, added, connected_count - added)
 
-                # 检测已验证库中该实例下所有节点的可用性
+                # 全量验证已验证库中该实例下所有节点的可用性
                 await self._verify_instance_verified(source_id)
             else:
                 # 无已连接节点，清空该实例的已验证记录
@@ -481,7 +487,7 @@ class TaskScheduler:
                 if deleted:
                     logger.info("全局节点限制 %d，优先删除 %d 个订阅源节点", max_proxies, deleted)
 
-            # 更新元信息：已连接数 = 已验证库中的数量
+            # 更新元信息：已入库数 = 已验证库中该实例下的总量
             verified = await self.db.get_verified_by_instance_id(source_id)
             await self.db.batch_update_instance_meta(
                 source_id,
