@@ -5,7 +5,7 @@
 {% block content %}
 <!-- 统计卡片 -->
 <div class="row mb-4">
-    <div class="col-md-4">
+    <div class="col-md-3">
         <div class="card stat-card text-white bg-primary">
             <div class="card-body">
                 <h6 class="card-title"><i class="bi bi-collection"></i> 订阅条目数</h6>
@@ -13,15 +13,23 @@
             </div>
         </div>
     </div>
-    <div class="col-md-4">
+    <div class="col-md-3">
         <div class="card stat-card text-white bg-success">
             <div class="card-body">
-                <h6 class="card-title"><i class="bi bi-check-circle"></i> 可用节点数</h6>
+                <h6 class="card-title"><i class="bi bi-check-circle"></i> 订阅节点数</h6>
                 <h3 class="mb-0"><span id="availableCount">{{ stats.available }}</span> <small style="font-size:0.5em;opacity:0.7">/ <span id="maxProxiesDisplay">{{ max_proxies }}</span></small></h3>
             </div>
         </div>
     </div>
-    <div class="col-md-4">
+    <div class="col-md-3">
+        <div class="card stat-card text-white bg-warning">
+            <div class="card-body">
+                <h6 class="card-title"><i class="bi bi-shield-check"></i> 实例节点数</h6>
+                <h3 class="mb-0"><span id="verifiedCount">{{ stats.verified }}</span></h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
         <div class="card stat-card text-white bg-info">
             <div class="card-body">
                 <h6 class="card-title"><i class="bi bi-speedometer2"></i> 平均延迟数</h6>
@@ -186,7 +194,7 @@
     <div class="col-md-4">
         <div class="card h-100">
             <div class="card-header d-flex justify-content-between align-items-center py-2">
-                <span class="fw-bold"><i class="bi bi-hdd-network"></i> 服务实例源</span>
+                <span class="fw-bold"><i class="bi bi-hdd-network"></i> V2A服务实例源</span>
                 <button class="btn btn-primary btn-sm" data-bs-toggle="collapse" data-bs-target="#addInstanceForm">
                     <i class="bi bi-plus-lg"></i> 添加
                 </button>
@@ -317,23 +325,39 @@
     </div>
 </div>
 
-<!-- 按来源 Tab 切换（订阅源，只显示有可用节点的） -->
+<!-- 按来源 Tab 切换（订阅源 + 实例源已验证节点） -->
 {% set available_subs = [] %}
 {% for sub in subscriptions %}
 {% if sub_available_counts.get(sub.id, 0) > 0 %}
 {% if available_subs.append(sub) %}{% endif %}
 {% endif %}
 {% endfor %}
-{% set has_any = available_subs %}
+{% set available_insts = [] %}
+{% for inst in instance_sources %}
+{% if verified_grouped.get(inst.id) %}
+{% if available_insts.append(inst) %}{% endif %}
+{% endif %}
+{% endfor %}
+{% set has_any = available_subs or available_insts %}
 {% if has_any %}
 <ul class="nav nav-tabs mb-0" id="subTab" role="tablist">
     {% for sub in available_subs %}
     <li class="nav-item" role="presentation" data-bs-toggle="tooltip" data-bs-placement="bottom" title="{{ sub.url }}">
         <button class="nav-link {{ 'active' if loop.index == 1 else '' }}" id="tab-{{ sub.id }}"
                 data-bs-toggle="tab" data-bs-target="#pane-{{ sub.id }}" type="button" role="tab"
-                data-sub-id="{{ sub.id }}">
+                data-sub-id="{{ sub.id }}" data-tab-type="sub">
             订阅 #{{ sub.id }}
             <span class="badge bg-primary ms-1">{{ sub_available_counts.get(sub.id, 0) }}</span>
+        </button>
+    </li>
+    {% endfor %}
+    {% for inst in available_insts %}
+    <li class="nav-item" role="presentation" data-bs-toggle="tooltip" data-bs-placement="bottom" title="{{ inst.base_url }}">
+        <button class="nav-link {{ 'active' if (not available_subs and loop.index == 1) else '' }}" id="tab-inst-{{ inst.id }}"
+                data-bs-toggle="tab" data-bs-target="#pane-inst-{{ inst.id }}" type="button" role="tab"
+                data-inst-id="{{ inst.id }}" data-tab-type="inst">
+            实例 #{{ inst.id }}
+            <span class="badge bg-success ms-1">{{ verified_grouped.get(inst.id) | length }}</span>
         </button>
     </li>
     {% endfor %}
@@ -390,6 +414,58 @@
             </table>
         </div>
         <nav aria-label="分页" class="mt-2" id="pager-{{ sub.id }}" data-sub="{{ sub.id }}" data-page="1" data-size="10">
+            <ul class="pagination pagination-sm mb-0 justify-content-center"></ul>
+        </nav>
+    </div>
+    {% endfor %}
+    {% for inst in available_insts %}
+    <div class="tab-pane fade {{ 'show active' if (not available_subs and loop.index == 1) else '' }}" id="pane-inst-{{ inst.id }}" role="tabpanel">
+        <div class="d-flex justify-content-end mb-2 gap-1">
+            <button class="btn btn-outline-success btn-sm" onclick="fetchInstanceSource({{ inst.id }})">
+                <i class="bi bi-cloud-download"></i> 获取此实例
+            </button>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-hover table-sm mb-0" id="tbl-inst-{{ inst.id }}">
+                <thead class="table-light">
+                    <tr>
+                        <th width="30">#</th>
+                        <th>名称</th>
+                        <th>协议</th>
+                        <th>地址</th>
+                        <th>端口</th>
+                        <th class="sortable" data-sort="latency" onclick="sortTable('tbl-inst-{{ inst.id }}','latency',this)">延迟 <i class="bi bi-arrow-down-up"></i></th>
+                        <th class="sortable" data-sort="time" onclick="sortTable('tbl-inst-{{ inst.id }}','time',this)">入库时间 <i class="bi bi-arrow-down-up"></i></th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for proxy in verified_grouped.get(inst.id, []) %}
+                    <tr data-latency="{{ proxy.latency_ms }}" data-time="{{ proxy.created_at }}" data-inst="{{ inst.id }}">
+                        <td>{{ loop.index }}</td>
+                        <td title="{{ proxy.name }}">{{ proxy.name[:30] }}{% if proxy.name|length > 30 %}...{% endif %}</td>
+                        <td><span class="badge bg-secondary">{{ proxy.protocol }}</span></td>
+                        <td><code>{{ proxy.address }}</code></td>
+                        <td>{{ proxy.port }}</td>
+                        <td>
+                            <span class="{{ 'latency-good' if proxy.latency_ms < 500 else ('latency-medium' if proxy.latency_ms < 1500 else 'latency-bad') }}">
+                                {{ "%.0f"|format(proxy.latency_ms) }} ms
+                            </span>
+                        </td>
+                        <td><small>{{ proxy.created_at[:19] if proxy.created_at else '-' }}</small></td>
+                        <td>
+                            <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem"
+                                    onclick="deleteVerifiedProxy({{ proxy.id }}, {{ inst.id }})">删除</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    {% if not verified_grouped.get(inst.id) %}
+                    <tr><td colspan="8" class="text-center text-muted py-3">暂无已验证节点</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+        <nav aria-label="分页" class="mt-2" id="pager-inst-{{ inst.id }}" data-sub="inst-{{ inst.id }}" data-page="1" data-size="10">
             <ul class="pagination pagination-sm mb-0 justify-content-center"></ul>
         </nav>
     </div>
@@ -572,7 +648,11 @@ setInterval(function() {
             var el = document.getElementById('availableCount');
             if (el) el.textContent = stats.available;
         }
-        if (cards[2]) cards[2].textContent = Math.round(stats.avg_latency_ms) + ' ms';
+        if (cards[2]) {
+            var vEl = document.getElementById('verifiedCount');
+            if (vEl) vEl.textContent = stats.verified || 0;
+        }
+        if (cards[3]) cards[3].textContent = Math.round(stats.avg_latency_ms) + ' ms';
         // 同步 max_proxies 显示和输入框
         if (stats.max_proxies) {
             var display = document.getElementById('maxProxiesDisplay');
@@ -669,7 +749,16 @@ async function deleteSubscription(id) {
 // 获取当前激活 Tab 对应的订阅 ID
 function getCurrentSubId() {
     var activeTab = document.querySelector('#subTab .nav-link.active');
-    return activeTab ? parseInt(activeTab.dataset.subId) : null;
+    if (!activeTab) return null;
+    if (activeTab.dataset.tabType === 'inst') return null;  // 实例标签页无 subId
+    return parseInt(activeTab.dataset.subId);
+}
+
+function getCurrentInstId() {
+    var activeTab = document.querySelector('#subTab .nav-link.active');
+    if (!activeTab) return null;
+    if (activeTab.dataset.tabType !== 'inst') return null;
+    return parseInt(activeTab.dataset.instId);
 }
 
 async function triggerFetchCurrent() {
@@ -757,6 +846,22 @@ async function deleteProxy(id) {
     } catch (e) { alert('删除失败: ' + e.message); }
 }
 
+async function deleteVerifiedProxy(id, instId) {
+    if (!confirm('确定删除该已验证节点？')) return;
+    try {
+        const resp = await fetch('/api/verified-proxies/' + id, { method: 'DELETE' });
+        if (resp.ok) {
+            var row = document.querySelector('button[onclick="deleteVerifiedProxy(' + id + ', ' + instId + ')"]');
+            if (row) {
+                var tr = row.closest('tr');
+                var pagerKey = 'inst-' + instId;
+                if (tr) tr.remove();
+                applyPagination(pagerKey);
+            }
+        }
+    } catch (e) { alert('删除失败: ' + e.message); }
+}
+
 async function deleteAllProxies() {
     if (!confirm('确定清除数据库内所有已保存节点？此操作不可恢复！')) return;
     try {
@@ -806,7 +911,9 @@ function refreshPage() {
         fetch('/api/stats', {cache:'no-store'}).then(r => r.json()),
         fetch('/api/proxies/grouped', {cache:'no-store'}).then(r => r.json()),
         fetch('/api/subscriptions', {cache:'no-store'}).then(r => r.json()),
-    ]).then(function([stats, groupedData, subsResult]) {
+        fetch('/api/verified-proxies/grouped', {cache:'no-store'}).then(r => r.json()),
+        fetch('/api/instance-sources', {cache:'no-store'}).then(r => r.json()),
+    ]).then(function([stats, groupedData, subsResult, verifiedData, instResult]) {
         // 1. 更新统计数字
         var cards = document.querySelectorAll('.stat-card h3');
         if (cards[0]) cards[0].textContent = stats.total;
@@ -814,7 +921,11 @@ function refreshPage() {
             var el = document.getElementById('availableCount');
             if (el) el.textContent = stats.available;
         }
-        if (cards[2]) cards[2].textContent = Math.round(stats.avg_latency_ms) + ' ms';
+        if (cards[2]) {
+            var vEl = document.getElementById('verifiedCount');
+            if (vEl) vEl.textContent = stats.verified || 0;
+        }
+        if (cards[3]) cards[3].textContent = Math.round(stats.avg_latency_ms) + ' ms';
         // 同步节点数限制显示
         if (stats.max_proxies) {
             var display = document.getElementById('maxProxiesDisplay');
@@ -837,11 +948,13 @@ function refreshPage() {
             protocolChartInstance.update('none');
         }
 
-        // 3. 更新 subsData（用于编辑弹窗）
+        // 3. 更新 subsData 和 instData（用于编辑弹窗）
         subsData = subsResult.subscriptions;
+        instData = instResult.sources;
 
         // 4. 更新订阅源表格中的可用数和状态
         var grouped = groupedData.grouped;
+        var verifiedGrouped = verifiedData.verified_grouped;
         subsResult.subscriptions.forEach(function(sub) {
             var availableCount = (grouped[String(sub.id)] || []).length;
             // 更新可用数 badge（通过行中的 badge bg-info）
@@ -878,13 +991,15 @@ function refreshPage() {
         if (!container) return;
         var currentActiveTab = document.querySelector('#subTab .nav-link.active');
         var currentSubId = currentActiveTab ? currentActiveTab.dataset.subId : null;
+        var currentInstId = currentActiveTab ? currentActiveTab.dataset.instId : null;
+        var currentTabType = currentActiveTab ? currentActiveTab.dataset.tabType : null;
 
         // 重建 Tab 和节点内容
         var subsWithProxies = subsResult.subscriptions.filter(function(sub) {
             return (grouped[String(sub.id)] || []).length > 0;
         });
 
-        // 更新 Tab 标签上的可用数 badge
+        // 更新订阅 Tab 标签上的可用数 badge
         subsWithProxies.forEach(function(sub) {
             var tabBtn = document.querySelector('#tab-' + sub.id);
             if (tabBtn) {
@@ -893,8 +1008,20 @@ function refreshPage() {
             }
         });
 
+        // 更新实例 Tab 标签上的可用数 badge
+        var instsWithVerified = instResult.sources.filter(function(inst) {
+            return (verifiedGrouped[String(inst.id)] || []).length > 0;
+        });
+        instsWithVerified.forEach(function(inst) {
+            var tabBtn = document.querySelector('#tab-inst-' + inst.id);
+            if (tabBtn) {
+                var badge = tabBtn.querySelector('.badge');
+                if (badge) badge.textContent = (verifiedGrouped[String(inst.id)] || []).length;
+            }
+        });
+
         // 更新当前激活 Tab 的节点表格
-        if (currentSubId) {
+        if (currentTabType === 'sub' && currentSubId) {
             var proxies = grouped[String(currentSubId)] || [];
             var tbody = document.querySelector('#tbl-' + currentSubId + ' tbody');
             if (tbody) {
@@ -919,6 +1046,33 @@ function refreshPage() {
                 }
                 pageState[currentSubId] = 1;
                 applyPagination(currentSubId);
+            }
+        } else if (currentTabType === 'inst' && currentInstId) {
+            var vProxies = verifiedGrouped[String(currentInstId)] || [];
+            var vtbody = document.querySelector('#tbl-inst-' + currentInstId + ' tbody');
+            if (vtbody) {
+                vtbody.innerHTML = vProxies.map(function(p, i) {
+                    var latencyClass = p.latency_ms < 500 ? 'latency-good' :
+                                       p.latency_ms < 1500 ? 'latency-medium' : 'latency-bad';
+                    var nameShort = p.name.length > 30 ? p.name.substring(0, 30) + '...' : p.name;
+                    var timeShort = p.created_at ? p.created_at.substring(0, 19) : '-';
+                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-inst="' + currentInstId + '">' +
+                        '<td>' + (i + 1) + '</td>' +
+                        '<td title="' + p.name + '">' + nameShort + '</td>' +
+                        '<td><span class="badge bg-secondary">' + p.protocol + '</span></td>' +
+                        '<td><code>' + p.address + '</code></td>' +
+                        '<td>' + p.port + '</td>' +
+                        '<td><span class="' + latencyClass + '">' + Math.round(p.latency_ms) + ' ms</span></td>' +
+                        '<td><small>' + timeShort + '</small></td>' +
+                        '<td><button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem" onclick="deleteVerifiedProxy(' + p.id + ', ' + currentInstId + ')">删除</button></td>' +
+                        '</tr>';
+                }).join('');
+                if (!vProxies.length) {
+                    vtbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">暂无已验证节点</td></tr>';
+                }
+                var pagerKey = 'inst-' + currentInstId;
+                pageState[pagerKey] = 1;
+                applyPagination(pagerKey);
             }
         }
     }).catch(function() { window.location.reload(); });
@@ -1151,6 +1305,35 @@ async function importSubs(id) {
 // 初始化 Bootstrap Tooltip（页面首次加载，等待 DOM + Bootstrap 就绪）
 document.addEventListener('DOMContentLoaded', function() {
     initTooltips();
+    // 启动定时刷新统计信息（每10秒）
+    setInterval(refreshStats, 10000);
 });
+
+// 定时刷新统计信息
+async function refreshStats() {
+    try {
+        const resp = await fetch('/api/stats');
+        const stats = await resp.json();
+        
+        // 更新统计卡片
+        const verifiedCountEl = document.getElementById('verifiedCount');
+        if (verifiedCountEl) {
+            verifiedCountEl.textContent = stats.verified || 0;
+        }
+        
+        const availableCountEl = document.getElementById('availableCount');
+        if (availableCountEl) {
+            availableCountEl.textContent = stats.available || 0;
+        }
+        
+        // 更新平均延迟
+        const avgLatencyEl = document.querySelector('.stat-card.bg-info h3');
+        if (avgLatencyEl) {
+            avgLatencyEl.textContent = Math.round(stats.avg_latency_ms || 0) + ' ms';
+        }
+    } catch (e) {
+        console.error('刷新统计失败:', e);
+    }
+}
 </script>
 {% endblock %}
