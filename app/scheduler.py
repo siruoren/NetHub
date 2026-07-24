@@ -456,9 +456,18 @@ class TaskScheduler:
             logger.info("开始获取实例源 #%d: %s", source.id, source.base_url)
             await self.db.batch_update_instance_meta(source_id, fetch_status="updating")
 
-            proxies, subscription_urls = await fetch_connected_proxies(
-                source.base_url, source.username, source.password,
-            )
+            # Add overall timeout to prevent hanging
+            try:
+                proxies, subscription_urls = await asyncio.wait_for(
+                    fetch_connected_proxies(
+                        source.base_url, source.username, source.password,
+                    ),
+                    timeout=300.0  # 5 minutes total timeout
+                )
+            except asyncio.TimeoutError:
+                logger.error("实例源 #%d: 获取超时（5分钟），可能网络或服务实例响应慢", source.id)
+                await self.db.batch_update_instance_meta(source_id, fetch_status="failed")
+                return
 
             # 缓存订阅地址列表，供手工导入时使用
             self._last_instance_sub_urls = subscription_urls
@@ -475,7 +484,11 @@ class TaskScheduler:
                             source.id, added, connected_count - added)
 
                 # 全量验证已验证库中该实例下所有节点的可用性
-                await self._verify_instance_verified(source_id)
+                try:
+                    await self._verify_instance_verified(source_id)
+                except Exception as verify_error:
+                    logger.error("实例源 #%d: 验证过程异常: %s", source.id, verify_error)
+                    # 验证失败也继续更新状态，避免卡在updating
             else:
                 # 无已连接节点，清空该实例的已验证记录
                 await self.db.delete_verified_by_instance_id(source_id)
@@ -497,8 +510,8 @@ class TaskScheduler:
 
             self._last_fetch_time = datetime.now(timezone(timedelta(hours=8))).isoformat()
         except Exception as e:
+            logger.error("实例源 #%d: 获取过程异常: %s", source_id, e, exc_info=True)
             await self.db.batch_update_instance_meta(source_id, fetch_status="failed")
-            logger.error("获取实例源 #%d 异常: %s", source.id, e, exc_info=True)
 
     async def _verify_instance_verified(self, source_id: int) -> None:
         """验证已验证库中指定实例下所有节点的可用性，检测失败则删除
