@@ -460,15 +460,19 @@ class TaskScheduler:
             self._add_instance_source_job(source)
 
     async def _fetch_single_instance_source(self, source_id: int) -> None:
-        """从服务实例获取已连接节点，增量入已验证库，再全量验证延迟
+        """从服务实例获取已连接节点，基于实例节点身份精准同步已验证库，再全量验证延迟
 
         流程：
         1. 登录实例获取已连接节点和订阅地址列表
         2. 保存已连接数（connected_count）到数据库
-        3. 增量插入：已有节点跳过（INSERT OR IGNORE），新节点入已验证库（延迟默认-1）
+        3. 精准同步：基于实例节点身份(instance_node_name+address)对比已验证库
+           - 身份已存在且 link 相同 → 跳过
+           - 身份已存在但 link 变化 → UPDATE link 及字段
+           - 身份不存在 → INSERT 新节点
+           - 已有但不在当前已连接中 → DELETE（已断开）
         4. 全量验证：检测已验证库中该实例下所有节点的延迟
         5. 检测失败的删除，可达的更新延迟
-        6. 实例节点限制检查（该实例已验证节点不超限，超限删延迟最高+入库最久的）
+        6. 全局实例节点限制检查
         7. 全局节点限制检查（订阅+已验证总数不超限，超限优先删订阅源节点）
         """
         # 防止并发获取同一实例源
@@ -509,17 +513,20 @@ class TaskScheduler:
 
             if connected_count > 0:
                 # 检查这些节点是否在订阅节点库中存在，如果存在则从订阅库删除
-                proxy_links = [p.link for p in proxies]
+                proxy_links = [p[0].link for p in proxies]
                 existing_in_proxies = await self.db.get_proxy_links_set(proxy_links)
                 if existing_in_proxies:
                     deleted_from_proxies = await self.db.delete_proxies_by_links(list(existing_in_proxies))
                     logger.info("实例源 #%d: 从订阅节点库中移除 %d 个重复节点", source.id, deleted_from_proxies)
 
-                # 增量插入：已有节点跳过，新节点入已验证库（延迟默认-1）
-                verified_items = [(proxy, -1.0, source_id) for proxy in proxies]
-                added = await self.db.batch_insert_verified_proxies(verified_items)
-                logger.info("实例源 #%d: 新增入库 %d 个节点（跳过已存在 %d），开始全量验证...",
-                            source.id, added, connected_count - added)
+                # 基于实例节点身份精准同步：新增/更新/删除
+                sync_items = [
+                    (proxy, inst_name, inst_addr, source_id)
+                    for proxy, inst_name, inst_addr in proxies
+                ]
+                added, updated, deleted_sync = await self.db.sync_verified_proxies(sync_items)
+                logger.info("实例源 #%d: 同步完成 - 新增 %d, 更新 %d, 删除断开 %d，开始全量验证...",
+                            source.id, added, updated, deleted_sync)
 
                 # 全量验证已验证库中该实例下所有节点的可用性
                 try:

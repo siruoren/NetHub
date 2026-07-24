@@ -117,8 +117,21 @@ class ProxyDatabase:
             CREATE INDEX IF NOT EXISTS idx_verified_proxies_protocol ON verified_proxies(protocol);
             CREATE INDEX IF NOT EXISTS idx_verified_proxies_instance_id ON verified_proxies(instance_source_id);
             CREATE INDEX IF NOT EXISTS idx_verified_proxies_link ON verified_proxies(link);
+            CREATE INDEX IF NOT EXISTS idx_verified_proxies_inst_node ON verified_proxies(instance_source_id, instance_node_name, instance_node_address);
         """)
         await self._db.commit()
+
+        # 迁移：为 verified_proxies 添加实例节点标识列
+        try:
+            await self._db.execute("ALTER TABLE verified_proxies ADD COLUMN instance_node_name TEXT NOT NULL DEFAULT ''")
+            await self._db.commit()
+        except Exception:
+            pass
+        try:
+            await self._db.execute("ALTER TABLE verified_proxies ADD COLUMN instance_node_address TEXT NOT NULL DEFAULT ''")
+            await self._db.commit()
+        except Exception:
+            pass
 
         # 迁移：为旧表添加 subscription_id 列（如不存在）
         try:
@@ -451,6 +464,97 @@ class ProxyDatabase:
                 pass
         self._invalidate_stats()
         return added
+
+    async def sync_verified_proxies(
+        self,
+        items: list[tuple[ProxyInfo, str, str, int]],
+    ) -> tuple[int, int, int]:
+        """基于实例节点身份精准同步已验证节点
+
+        items: [(ProxyInfo, instance_node_name, instance_node_address, instance_source_id), ...]
+        返回: (新增数, 更新数, 删除数)
+
+        逻辑：
+        1. 获取该实例下所有已验证节点，按 (instance_node_name, instance_node_address) 建索引
+        2. 遍历传入的节点：
+           - 身份已存在且 link 相同 → 跳过
+           - 身份已存在但 link 变化 → UPDATE link 及其他字段
+           - 身份不存在 → INSERT
+        3. 不在传入列表中的已存在节点 → DELETE（已断开连接）
+        """
+        if not items:
+            return 0, 0, 0
+
+        instance_source_id = items[0][3]
+        now = datetime.now(timezone(timedelta(hours=8))).isoformat()
+
+        # 获取该实例下所有已验证节点
+        cursor = await self._db.execute(
+            "SELECT id, protocol, name, address, port, link, latency_ms, instance_node_name, instance_node_address FROM verified_proxies WHERE instance_source_id = ?",
+            (instance_source_id,),
+        )
+        rows = await cursor.fetchall()
+
+        # 按 (instance_node_name, instance_node_address) 建索引
+        existing_map: dict[tuple[str, str], dict] = {}
+        existing_ids: set[int] = set()
+        for row in rows:
+            key = (row["instance_node_name"] or "", row["instance_node_address"] or "")
+            existing_map[key] = {
+                "id": row["id"],
+                "link": row["link"],
+                "latency_ms": row["latency_ms"],
+            }
+            existing_ids.add(row["id"])
+
+        added = 0
+        updated = 0
+        matched_ids: set[int] = set()
+
+        for proxy, inst_name, inst_addr, _source_id in items:
+            key = (inst_name, inst_addr)
+            existing = existing_map.get(key)
+
+            if existing:
+                matched_ids.add(existing["id"])
+                if existing["link"] != proxy.link:
+                    # link 变化，更新节点信息（保留原有延迟和入库时间）
+                    await self._db.execute(
+                        """UPDATE verified_proxies
+                           SET protocol = ?, name = ?, address = ?, port = ?, link = ?
+                           WHERE id = ?""",
+                        (proxy.protocol, proxy.name, proxy.address, proxy.port, proxy.link, existing["id"]),
+                    )
+                    await self._db.commit()
+                    updated += 1
+            else:
+                # 新节点，插入（延迟默认-1）
+                try:
+                    cursor = await self._db.execute(
+                        """INSERT OR IGNORE INTO verified_proxies
+                           (protocol, name, address, port, link, latency_ms, instance_source_id,
+                            instance_node_name, instance_node_address, created_at)
+                           VALUES (?, ?, ?, ?, ?, -1, ?, ?, ?, ?)""",
+                        (proxy.protocol, proxy.name, proxy.address, proxy.port, proxy.link,
+                         instance_source_id, inst_name, inst_addr, now),
+                    )
+                    await self._db.commit()
+                    if cursor.rowcount > 0:
+                        added += 1
+                except Exception:
+                    pass
+
+        # 删除不再连接的节点
+        stale_ids = existing_ids - matched_ids
+        deleted = 0
+        for stale_id in stale_ids:
+            await self._db.execute("DELETE FROM verified_proxies WHERE id = ?", (stale_id,))
+            await self._db.commit()
+            deleted += 1
+
+        if added or updated or deleted:
+            self._invalidate_stats()
+        return added, updated, deleted
 
     async def get_verified_by_instance_id(self, instance_source_id: int) -> list[ProxyDBRecord]:
         """获取指定实例源下的所有已验证节点"""

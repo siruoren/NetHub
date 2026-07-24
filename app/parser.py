@@ -688,11 +688,12 @@ def _strings_similar(s1: str, s2: str, threshold: float = 0.5) -> bool:
 
 async def fetch_connected_proxies(
     base_url: str, username: str, password: str,
-) -> tuple[list[ProxyInfo], list[str], int]:
+) -> tuple[list[tuple[ProxyInfo, str, str]], list[str], int]:
     """从服务实例获取所有已连接节点的分享链接和订阅地址列表
 
-    返回: (matched_proxies, subscription_urls, connected_node_count)
-    - matched_proxies: 匹配成功的 ProxyInfo 列表
+    返回: (matched_proxies_with_identity, subscription_urls, connected_node_count)
+    - matched_proxies_with_identity: [(ProxyInfo, instance_node_name, instance_node_address), ...]
+      每个匹配成功的节点附带实例 API 中的节点名称和地址，用于精准标识
     - subscription_urls: 服务实例中所有订阅源的地址 URL 列表
     - connected_node_count: 服务实例 API 返回的实际已连接节点数
 
@@ -719,7 +720,7 @@ async def fetch_connected_proxies(
             if sub.get("address")
         ]
 
-        matched_proxies: list[ProxyInfo] = []
+        matched_proxies: list[tuple[ProxyInfo, str, str]] = []  # [(ProxyInfo, conn_node_name, conn_node_address), ...]
         matched_node_ids: set[int] = set()
 
         for sub_index, sub in enumerate(subscriptions):
@@ -769,7 +770,7 @@ async def fetch_connected_proxies(
 
                 if best_match and best_quality >= 1:
                     matched_node_ids.add(conn_node["id"])
-                    matched_proxies.append(best_match)
+                    matched_proxies.append((best_match, conn_node["name"], conn_node["address"]))
                 else:
                     unmatched.append(conn_node)
 
@@ -800,7 +801,7 @@ async def fetch_connected_proxies(
 
                 if best_match and best_quality >= 1:
                     matched_node_ids.add(conn_node["id"])
-                    matched_proxies.append(best_match)
+                    matched_proxies.append((best_match, conn_node["name"], conn_node["address"]))
 
         logger.info("服务实例 %s: 共匹配到 %d 个已连接节点配置(实际已连接 %d), 发现 %d 个订阅源",
                      base_url, len(matched_proxies), connected_node_count, len(subscription_urls))
