@@ -496,6 +496,13 @@ class TaskScheduler:
                         source.id, connected_count, len(subscription_urls))
 
             if connected_count > 0:
+                # 检查这些节点是否在订阅节点库中存在，如果存在则从订阅库删除
+                proxy_links = [p.link for p in proxies]
+                existing_in_proxies = await self.db.get_proxy_links_set(proxy_links)
+                if existing_in_proxies:
+                    deleted_from_proxies = await self.db.delete_proxies_by_links(list(existing_in_proxies))
+                    logger.info("实例源 #%d: 从订阅节点库中移除 %d 个重复节点", source.id, deleted_from_proxies)
+
                 # 增量插入：已有节点跳过，新节点入已验证库（延迟默认-1）
                 verified_items = [(proxy, -1.0, source_id) for proxy in proxies]
                 added = await self.db.batch_insert_verified_proxies(verified_items)
