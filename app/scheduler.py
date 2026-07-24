@@ -32,8 +32,6 @@ class TaskScheduler:
         self._verifying = False
         self._verifying_subs: set[int] = set()  # 正在验证的订阅 ID 集合，防止并发
         self._last_instance_sub_urls: list[str] = []  # 最近一次实例源获取的订阅地址缓存
-        self._fetch_queue: asyncio.Queue | None = None  # 队列式更新
-        self._fetch_worker_running = False
         self._fetching_instances: set[int] = set()  # 正在获取的实例源 ID 集合，防止并发
 
     def start(self) -> None:
