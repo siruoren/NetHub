@@ -357,7 +357,7 @@
                 data-bs-toggle="tab" data-bs-target="#pane-inst-{{ inst.id }}" type="button" role="tab"
                 data-inst-id="{{ inst.id }}" data-tab-type="inst">
             实例 #{{ inst.id }}
-            <span class="badge bg-success ms-1">{{ verified_grouped.get(inst.id) | length }}</span>
+            <span class="badge bg-success ms-1">{{ verified_total_counts.get(inst.id, 0) }}</span>
         </button>
     </li>
     {% endfor %}
@@ -1088,12 +1088,25 @@ function initPagination() {
         pageState[subId] = 1;
         applyPagination(subId);
     });
+    // 初始化实例表的分页
+    document.querySelectorAll('nav[id^="pager-inst-"]').forEach(function(nav) {
+        var instId = nav.id.replace('pager-inst-', '');
+        var subId = 'inst-' + instId;
+        pageState[subId] = 1;
+        applyPagination(subId);
+    });
 }
 
 function applyPagination(subId) {
     var tbody = document.querySelector('#tbl-' + subId + ' tbody');
     if (!tbody) return;
-    var rows = Array.from(tbody.querySelectorAll('tr[data-sub="' + subId + '"]'));
+    
+    // 判断是订阅表还是实例表
+    var isInst = subId.startsWith('inst-');
+    var dataAttr = isInst ? 'data-inst' : 'data-sub';
+    var instId = isInst ? subId.replace('inst-', '') : null;
+    
+    var rows = Array.from(tbody.querySelectorAll('tr[' + dataAttr + '="' + (isInst ? instId : subId) + '"]'));
     var total = rows.length;
     var totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
     var page = pageState[subId] || 1;

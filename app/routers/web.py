@@ -32,12 +32,15 @@ async def index(request: Request):
     )
     stats, subscriptions, grouped, check_urls, instance_sources = results
 
-    # 获取已验证库按实例源分组（仅延迟达标的，与订阅源可用节点过滤规则一致）
+    # 获取已验证库按实例源分组（所有节点，包括未验证的）
     verified_grouped = {}
+    verified_total_counts = {}  # 每个实例的总节点数（包括未验证的）
     for inst in instance_sources:
-        vp = await db.get_verified_available_by_instance_id(inst.id, config.check.latency_threshold)
-        if vp:
-            verified_grouped[inst.id] = vp
+        # 获取该实例的所有节点（包括延迟为-1的未验证节点）
+        all_vp = await db.get_verified_by_instance_id(inst.id)
+        if all_vp:
+            verified_grouped[inst.id] = all_vp
+        verified_total_counts[inst.id] = len(all_vp)
 
     # 过滤包含 nethub 的订阅源（内部地址不在管理界面展示）
     subscriptions = [s for s in subscriptions if "nethub" not in s.url.lower()]
@@ -76,6 +79,7 @@ async def index(request: Request):
             "instance_sources_json": instance_sources_json,
             "grouped": grouped,
             "verified_grouped": verified_grouped,
+            "verified_total_counts": verified_total_counts,
             "latency_threshold": config.check.latency_threshold,
             "max_proxies": config.scheduler.max_proxies,
             "last_fetch_time": scheduler.last_fetch_time,
