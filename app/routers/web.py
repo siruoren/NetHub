@@ -63,25 +63,6 @@ async def index(request: Request):
         ensure_ascii=False,
     )
 
-    # 额外：为每个实例计算数据库中已入库的节点数（in-db count），以便在 UI 中同时显示“实例端已连接 / 已入库”两列
-    # 使用启发式方法：查找 subscriptions 表中 URL 包含 instance.base_url 的订阅（若存在），并统计这些订阅在 proxies 表中的节点数总和。
-    instance_in_db_counts = {}
-    try:
-        for inst in instance_sources:
-            cnt = 0
-            base = (inst.base_url or "").lower()
-            if base:
-                for sub in subscriptions:
-                    try:
-                        if sub.url and base in sub.url.lower():
-                            c = await db.get_proxy_count_by_subscription_id(sub.id)
-                            cnt += c
-                    except Exception:
-                        continue
-            instance_in_db_counts[inst.id] = cnt
-    except Exception:
-        instance_in_db_counts = {inst.id: 0 for inst in instance_sources}
-
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -95,7 +76,6 @@ async def index(request: Request):
             "instance_sources_json": instance_sources_json,
             "grouped": grouped,
             "verified_grouped": verified_grouped,
-            "instance_in_db_counts": instance_in_db_counts,
             "latency_threshold": config.check.latency_threshold,
             "max_proxies": config.scheduler.max_proxies,
             "last_fetch_time": scheduler.last_fetch_time,
