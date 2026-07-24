@@ -531,13 +531,13 @@ class TaskScheduler:
                 # 无已连接节点，清空该实例的已验证记录
                 await self.db.delete_verified_by_instance_id(source_id)
 
-            # 实例节点限制检查（该实例已验证节点不超限）
-            max_nodes = source.max_nodes
-            if max_nodes > 0:
-                deleted = await self.db.enforce_max_verified_proxies(source_id, max_nodes)
+            # 全局实例节点限制检查（所有已验证节点总数不超限）
+            max_instance_nodes = self.config.scheduler.max_instance_nodes
+            if max_instance_nodes > 0:
+                deleted = await self.db.enforce_max_all_verified_proxies(max_instance_nodes)
                 if deleted:
-                    logger.info("实例源 #%d: 超出实例节点限制 %d，删除 %d 个延迟最高/入库最久的节点",
-                                source_id, max_nodes, deleted)
+                    logger.info("超出全局实例节点限制 %d，删除 %d 个延迟最高/入库最久的已验证节点",
+                                max_instance_nodes, deleted)
 
             # 全局节点限制检查（订阅+已验证总数不超限，超限优先删订阅源节点）
             max_proxies = self.config.scheduler.max_proxies

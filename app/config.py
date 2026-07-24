@@ -37,6 +37,7 @@ class SchedulerConfig:
     cleanup_interval: int = 7200  # 清理间隔（秒）
     max_fail_count: int = 3  # 最大连续失败次数
     max_proxies: int = 500  # 最大可用条目数，超出按入库时间删除最老的
+    max_instance_nodes: int = 0  # 所有实例已验证节点总数上限，0=不限制
 
 
 @dataclass
@@ -93,6 +94,7 @@ def load_config(path: str = "config.yaml") -> AppConfig:
             "cleanup_interval": 7200,
             "max_fail_count": 3,
             "max_proxies": 500,
+            "max_instance_nodes": 0,
         },
     }
 

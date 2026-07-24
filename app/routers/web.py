@@ -50,7 +50,7 @@ async def index(request: Request):
         [{"id": s.id, "base_url": s.base_url, "username": s.username, "password": s.password,
           "crontab": s.crontab, "latency_threshold": s.latency_threshold,
           "max_concurrent": s.max_concurrent, "enabled": s.enabled,
-          "max_nodes": s.max_nodes, "connected_count": s.connected_count,
+          "connected_count": s.connected_count,
           "total_count": s.total_count} for s in instance_sources],
         ensure_ascii=False,
     )
@@ -69,9 +69,6 @@ async def index(request: Request):
         ensure_ascii=False,
     )
 
-    # 计算所有实例源的节点限制总和
-    instance_max_nodes = sum(inst.max_nodes for inst in instance_sources if inst.max_nodes > 0)
-
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -88,7 +85,7 @@ async def index(request: Request):
             "verified_total_counts": verified_total_counts,
             "latency_threshold": config.check.latency_threshold,
             "max_proxies": config.scheduler.max_proxies,
-            "instance_max_nodes": instance_max_nodes,
+            "max_instance_nodes": config.scheduler.max_instance_nodes,
             "last_fetch_time": scheduler.last_fetch_time,
             "last_verify_time": scheduler.last_verify_time,
         },

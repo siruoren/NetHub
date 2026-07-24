@@ -1027,6 +1027,26 @@ class ProxyDatabase:
         self._invalidate_stats()
         return cursor.rowcount
 
+    async def enforce_max_all_verified_proxies(self, max_count: int) -> int:
+        """执行全局实例节点限制（所有已验证节点总数不超限），超出按延迟最高+入库最久优先删除"""
+        if max_count <= 0:
+            return 0
+        cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies")
+        total = (await cursor.fetchone())["cnt"]
+        if total <= max_count:
+            return 0
+        excess = total - max_count
+        cursor = await self._db.execute(
+            """DELETE FROM verified_proxies WHERE id IN (
+                SELECT id FROM verified_proxies
+                ORDER BY latency_ms DESC, created_at ASC LIMIT ?
+            )""",
+            (excess,),
+        )
+        await self._db.commit()
+        self._invalidate_stats()
+        return cursor.rowcount
+
     async def get_verified_count_by_instance_id(self, instance_source_id: int) -> int:
         """获取指定实例源的已验证节点总数"""
         cursor = await self._db.execute(
@@ -1038,7 +1058,7 @@ class ProxyDatabase:
 
     async def update_instance_source(self, source_id: int, **kwargs) -> bool:
         """更新服务实例源，支持部分字段更新"""
-        allowed = {"base_url", "username", "password", "crontab", "latency_threshold", "max_concurrent", "enabled", "max_nodes"}
+        allowed = {"base_url", "username", "password", "crontab", "latency_threshold", "max_concurrent", "enabled"}
         updates = {}
         for k, v in kwargs.items():
             if k in allowed:

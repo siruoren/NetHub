@@ -25,7 +25,7 @@
         <div class="card stat-card text-white bg-warning">
             <div class="card-body">
                 <h6 class="card-title"><i class="bi bi-shield-check"></i> 实例节点数 <small style="font-size:0.7em;opacity:0.7">(已入库/限制)</small></h6>
-                <h3 class="mb-0"><span id="verifiedCount">{{ stats.verified_total }}</span> <small style="font-size:0.5em;opacity:0.7">/ <span id="instanceMaxNodes">{{ instance_max_nodes if instance_max_nodes else '0' }}</span></small></h3>
+                <h3 class="mb-0"><span id="verifiedCount">{{ stats.verified_total }}</span> <small style="font-size:0.5em;opacity:0.7">/ <span id="instanceMaxNodes">{{ max_instance_nodes if max_instance_nodes else '0' }}</span></small></h3>
             </div>
         </div>
     </div>
@@ -194,11 +194,27 @@
         <div class="card h-100">
             <div class="card-header d-flex justify-content-between align-items-center py-2">
                 <span class="fw-bold"><i class="bi bi-hdd-network"></i> V2A服务实例源</span>
-                <button class="btn btn-primary btn-sm" data-bs-toggle="collapse" data-bs-target="#addInstanceForm">
-                    <i class="bi bi-plus-lg"></i> 添加
-                </button>
+                <div class="d-flex gap-1">
+                    <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="collapse" data-bs-target="#maxInstanceNodesForm">
+                        <i class="bi bi-sliders"></i> 节点数限制
+                    </button>
+                    <button class="btn btn-primary btn-sm" data-bs-toggle="collapse" data-bs-target="#addInstanceForm">
+                        <i class="bi bi-plus-lg"></i> 添加
+                    </button>
+                </div>
             </div>
             <div class="card-body">
+                <!-- 全局实例节点限制配置（可折叠） -->
+                <div class="collapse mb-3" id="maxInstanceNodesForm">
+                    <div class="border rounded p-3 bg-light d-flex align-items-center gap-2">
+                        <label class="form-label mb-0 small flex-shrink-0">实例节点限制</label>
+                        <input type="number" id="maxInstanceNodesInput" class="form-control form-control-sm" min="0" value="{{ max_instance_nodes }}" style="width:6em" placeholder="0=不限">
+                        <button class="btn btn-primary btn-sm flex-shrink-0" onclick="updateMaxInstanceNodes(document.getElementById('maxInstanceNodesInput').value)">
+                            <i class="bi bi-check-lg"></i> 确定
+                        </button>
+                    </div>
+                    <small class="text-muted mt-1 d-block">所有实例已验证节点总数上限，0=不限制，超出按延迟最高、入库最久优先删除</small>
+                </div>
                 <!-- 添加实例源表单（可折叠） -->
                 <div class="collapse mb-3" id="addInstanceForm">
                     <div class="border rounded p-3 bg-light">
@@ -240,8 +256,6 @@
                                 <th>#</th>
                                 <th>地址</th>
                                 <th>已连接</th>
-                                <th>已入库</th>
-                                <th>限制</th>
                                 <th>状态</th>
                                 <th>操作</th>
                             </tr>
@@ -252,8 +266,6 @@
                                 <td>{{ inst.id }}</td>
                                 <td><code style="font-size:0.75rem">{{ inst.base_url[:30] }}{% if inst.base_url|length > 30 %}...{% endif %}</code></td>
                                 <td><span class="badge bg-info">{{ inst.connected_count }}</span></td>
-                                <td><span class="badge bg-secondary">{{ inst.total_count }}</span></td>
-                                <td><span class="badge {{ 'bg-warning text-dark' if inst.max_nodes > 0 else 'bg-light text-dark' }}">{{ inst.max_nodes if inst.max_nodes > 0 else '不限' }}</span></td>
                                 <td>
                                     <span class="badge {{ 'bg-success' if inst.enabled else 'bg-secondary' }}" style="cursor:pointer"
                                           onclick="toggleInstanceSource({{ inst.id }}, {{ 'false' if inst.enabled else 'true' }})">
@@ -271,7 +283,7 @@
                             </tr>
                             {% endfor %}
                             {% if not instance_sources %}
-                            <tr><td colspan="7" class="text-center text-muted py-2">暂无服务实例源，请点击"添加"</td></tr>
+                            <tr><td colspan="5" class="text-center text-muted py-2">暂无服务实例源，请点击"添加"</td></tr>
                             {% endif %}
                         </tbody>
                     </table>
@@ -540,25 +552,20 @@
                     </div>
                 </div>
                 <div class="row g-2">
-                    <div class="col-md-3">
+                    <div class="col-md-4">
                         <label class="form-label">Crontab</label>
                         <input type="text" id="edit-inst-crontab" class="form-control form-control-sm">
                         <small class="text-muted">分 时 日 月 周</small>
                     </div>
-                    <div class="col-md-3">
+                    <div class="col-md-4">
                         <label class="form-label">延迟阈值(ms)</label>
                         <input type="number" id="edit-inst-latency" class="form-control form-control-sm">
                     </div>
-                    <div class="col-md-3">
+                    <div class="col-md-4">
                         <label class="form-label">并发数</label>
                         <input type="number" id="edit-inst-concurrent" class="form-control form-control-sm">
                     </div>
-                    <div class="col-md-3">
-                        <label class="form-label">节点限制</label>
-                        <input type="number" id="edit-inst-max-nodes" class="form-control form-control-sm" min="0" placeholder="0=不限">
-                    </div>
                 </div>
-                <small class="text-muted mt-1 d-block">节点限制：该实例已验证入库最大条目数，超出按延迟最高、入库最久优先删除</small>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-danger btn-sm" onclick="deleteInstanceSource(document.getElementById('edit-inst-id').value);bootstrap.Modal.getInstance(document.getElementById('editInstanceModal')).hide()">删除</button>
@@ -660,7 +667,9 @@ setInterval(function() {
         }
         // 同步实例节点限制显示
         var imEl = document.getElementById('instanceMaxNodes');
-        if (imEl) imEl.textContent = stats.instance_max_nodes || 0;
+        if (imEl) imEl.textContent = stats.max_instance_nodes || 0;
+        var minInput = document.getElementById('maxInstanceNodesInput');
+        if (minInput && document.activeElement !== minInput) minInput.value = stats.max_instance_nodes || 0;
         // 动态更新协议分布图
         if (protocolChartInstance && stats.protocol_distribution) {
             var dist = stats.protocol_distribution;
@@ -833,6 +842,26 @@ async function updateMaxProxies(val) {
     }
 }
 
+async function updateMaxInstanceNodes(val) {
+    var n = parseInt(val);
+    if (isNaN(n) || n < 0) { alert('实例节点限制不能为负数'); return; }
+    try {
+        var res = await fetch('/api/config/max-instance-nodes', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({max_instance_nodes: n}),
+        });
+        var data = await res.json();
+        if (data.error) { alert(data.error); return; }
+        if (data.deleted > 0) {
+            alert('已删除 ' + data.deleted + ' 个延迟最高/入库最久的已验证节点');
+        }
+        refreshPage();
+    } catch(e) {
+        alert('更新失败: ' + e.message);
+    }
+}
+
 async function deleteProxy(id) {
     if (!confirm('确定删除该节点？')) return;
     try {
@@ -937,7 +966,9 @@ function refreshPage() {
         }
         // 同步实例节点限制显示
         var imEl2 = document.getElementById('instanceMaxNodes');
-        if (imEl2) imEl2.textContent = stats.instance_max_nodes || 0;
+        if (imEl2) imEl2.textContent = stats.max_instance_nodes || 0;
+        var minInput2 = document.getElementById('maxInstanceNodesInput');
+        if (minInput2 && document.activeElement !== minInput2) minInput2.value = stats.max_instance_nodes || 0;
 
         // 2. 更新协议分布图
         if (protocolChartInstance && stats.protocol_distribution) {
@@ -1263,7 +1294,6 @@ function editInstanceSource(id) {
     document.getElementById('edit-inst-crontab').value = inst.crontab;
     document.getElementById('edit-inst-latency').value = inst.latency_threshold;
     document.getElementById('edit-inst-concurrent').value = inst.max_concurrent;
-    document.getElementById('edit-inst-max-nodes').value = inst.max_nodes || 0;
     new bootstrap.Modal(document.getElementById('editInstanceModal')).show();
 }
 
@@ -1276,14 +1306,12 @@ async function saveInstanceSource() {
     const crontab = document.getElementById('edit-inst-crontab').value.trim();
     const latency = document.getElementById('edit-inst-latency').value;
     const concurrent = document.getElementById('edit-inst-concurrent').value;
-    const max_nodes = document.getElementById('edit-inst-max-nodes').value;
     if (base_url) params.set('base_url', base_url);
     if (username) params.set('username', username);
     if (password) params.set('password', password);
     if (crontab) params.set('crontab', crontab);
     if (latency) params.set('latency_threshold', latency);
     if (concurrent) params.set('max_concurrent', concurrent);
-    if (max_nodes !== '' && max_nodes !== undefined) params.set('max_nodes', max_nodes);
     try {
         const resp = await fetch('/api/instance-sources/' + id + '?' + params.toString(), { method: 'PUT' });
         if (resp.ok) { refreshPage(); }
@@ -1346,7 +1374,11 @@ async function refreshStats() {
 
         const instanceMaxNodesEl = document.getElementById('instanceMaxNodes');
         if (instanceMaxNodesEl) {
-            instanceMaxNodesEl.textContent = stats.instance_max_nodes || 0;
+            instanceMaxNodesEl.textContent = stats.max_instance_nodes || 0;
+        }
+        const maxInstNodesInput = document.getElementById('maxInstanceNodesInput');
+        if (maxInstNodesInput && document.activeElement !== maxInstNodesInput) {
+            maxInstNodesInput.value = stats.max_instance_nodes || 0;
         }
 
         const availableCountEl = document.getElementById('availableCount');
