@@ -508,20 +508,32 @@ class ProxyDatabase:
             if existing:
                 matched_ids.add(existing["id"])
                 if existing["link"] != proxy.link:
-                    # link 变化，更新节点信息（保留原有延迟和入库时间）
-                    await self._db.execute(
-                        """UPDATE verified_proxies
-                           SET protocol = ?, name = ?, address = ?, port = ?, link = ?
-                           WHERE id = ?""",
-                        (proxy.protocol, proxy.name, proxy.address, proxy.port, proxy.link, existing["id"]),
-                    )
-                    await self._db.commit()
-                    updated += 1
+                    # link 变化，先删除可能冲突的同 link 记录，再更新
+                    try:
+                        await self._db.execute(
+                            "DELETE FROM verified_proxies WHERE link = ? AND id != ?",
+                            (proxy.link, existing["id"]),
+                        )
+                        await self._db.execute(
+                            """UPDATE verified_proxies
+                               SET protocol = ?, name = ?, address = ?, port = ?, link = ?,
+                                   latency_ms = -1
+                               WHERE id = ?""",
+                            (proxy.protocol, proxy.name, proxy.address, proxy.port, proxy.link, existing["id"]),
+                        )
+                        await self._db.commit()
+                        updated += 1
+                    except Exception:
+                        pass
             else:
-                # 新节点，插入（延迟默认-1）
+                # 新节点，先删除可能冲突的同 link 记录，再插入
                 try:
+                    await self._db.execute(
+                        "DELETE FROM verified_proxies WHERE link = ?",
+                        (proxy.link,),
+                    )
                     cursor = await self._db.execute(
-                        """INSERT OR IGNORE INTO verified_proxies
+                        """INSERT INTO verified_proxies
                            (protocol, name, address, port, link, latency_ms, instance_source_id,
                             instance_node_name, instance_node_address, created_at)
                            VALUES (?, ?, ?, ?, ?, -1, ?, ?, ?, ?)""",
