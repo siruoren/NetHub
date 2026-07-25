@@ -526,7 +526,7 @@ class ProxyDatabase:
                     except Exception:
                         pass
             else:
-                # 新节点，link 已存在则跳过（不同实例身份匹配到同一 link）
+                # 新身份节点，尝试插入
                 try:
                     cursor = await self._db.execute(
                         """INSERT OR IGNORE INTO verified_proxies
@@ -539,6 +539,22 @@ class ProxyDatabase:
                     await self._db.commit()
                     if cursor.rowcount > 0:
                         added += 1
+                    else:
+                        # link 已存在（同实例不同身份匹配到同一 link），更新身份信息
+                        cur2 = await self._db.execute(
+                            "SELECT id FROM verified_proxies WHERE link = ? AND instance_source_id = ?",
+                            (proxy.link, instance_source_id),
+                        )
+                        dup_row = await cur2.fetchone()
+                        if dup_row:
+                            matched_ids.add(dup_row["id"])
+                            await self._db.execute(
+                                """UPDATE verified_proxies
+                                   SET instance_node_name = ?, instance_node_address = ?
+                                   WHERE id = ?""",
+                                (inst_name, inst_addr, dup_row["id"]),
+                            )
+                            await self._db.commit()
                 except Exception:
                     pass
 
