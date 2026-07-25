@@ -108,12 +108,13 @@ class ProxyDatabase:
                 name             TEXT    NOT NULL DEFAULT '',
                 address          TEXT    NOT NULL DEFAULT '',
                 port             TEXT    NOT NULL DEFAULT '',
-                link             TEXT    NOT NULL UNIQUE,
+                link             TEXT    NOT NULL,
                 latency_ms       REAL    DEFAULT -1,
                 instance_source_id INTEGER NOT NULL DEFAULT 0,
                 instance_node_name TEXT  NOT NULL DEFAULT '',
                 instance_node_address TEXT NOT NULL DEFAULT '',
-                created_at       TEXT    DEFAULT ''
+                created_at       TEXT    DEFAULT '',
+                UNIQUE(instance_source_id, instance_node_name, instance_node_address)
             );
 
             CREATE INDEX IF NOT EXISTS idx_verified_proxies_protocol ON verified_proxies(protocol);
@@ -140,6 +141,48 @@ class ProxyDatabase:
                 "CREATE INDEX IF NOT EXISTS idx_verified_proxies_inst_node ON verified_proxies(instance_source_id, instance_node_name, instance_node_address)"
             )
             await self._db.commit()
+        except Exception:
+            pass
+
+        # 迁移：重建 verified_proxies 表，将 UNIQUE 约束从 link 改为 (instance_source_id, instance_node_name, instance_node_address)
+        try:
+            # 检测旧表是否仍有 link UNIQUE 约束（新表不会触发）
+            cursor = await self._db.execute("PRAGMA index_list(verified_proxies)")
+            indexes = await cursor.fetchall()
+            has_link_unique = any(
+                idx["name"] == "sqlite_autoindex_verified_proxies_1"
+                for idx in indexes
+            )
+            if has_link_unique:
+                await self._db.executescript("""
+                    CREATE TABLE IF NOT EXISTS verified_proxies_new (
+                        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                        protocol         TEXT    NOT NULL,
+                        name             TEXT    NOT NULL DEFAULT '',
+                        address          TEXT    NOT NULL DEFAULT '',
+                        port             TEXT    NOT NULL DEFAULT '',
+                        link             TEXT    NOT NULL,
+                        latency_ms       REAL    DEFAULT -1,
+                        instance_source_id INTEGER NOT NULL DEFAULT 0,
+                        instance_node_name TEXT  NOT NULL DEFAULT '',
+                        instance_node_address TEXT NOT NULL DEFAULT '',
+                        created_at       TEXT    DEFAULT '',
+                        UNIQUE(instance_source_id, instance_node_name, instance_node_address)
+                    );
+                    INSERT OR IGNORE INTO verified_proxies_new
+                        SELECT id, protocol, name, address, port, link, latency_ms,
+                               instance_source_id, instance_node_name, instance_node_address, created_at
+                        FROM verified_proxies;
+                    DROP TABLE verified_proxies;
+                    ALTER TABLE verified_proxies_new RENAME TO verified_proxies;
+                """)
+                await self._db.commit()
+                # 重建索引
+                await self._db.execute("CREATE INDEX IF NOT EXISTS idx_verified_proxies_protocol ON verified_proxies(protocol)")
+                await self._db.execute("CREATE INDEX IF NOT EXISTS idx_verified_proxies_instance_id ON verified_proxies(instance_source_id)")
+                await self._db.execute("CREATE INDEX IF NOT EXISTS idx_verified_proxies_link ON verified_proxies(link)")
+                await self._db.execute("CREATE INDEX IF NOT EXISTS idx_verified_proxies_inst_node ON verified_proxies(instance_source_id, instance_node_name, instance_node_address)")
+                await self._db.commit()
         except Exception:
             pass
 
@@ -508,17 +551,21 @@ class ProxyDatabase:
             if existing:
                 matched_ids.add(existing["id"])
                 if existing["link"] != proxy.link:
-                    # link 变化，更新节点信息（保留原有延迟和入库时间）
-                    await self._db.execute(
-                        """UPDATE verified_proxies
-                           SET protocol = ?, name = ?, address = ?, port = ?, link = ?
-                           WHERE id = ?""",
-                        (proxy.protocol, proxy.name, proxy.address, proxy.port, proxy.link, existing["id"]),
-                    )
-                    await self._db.commit()
-                    updated += 1
+                    # link 变化，更新节点信息并重置延迟
+                    try:
+                        await self._db.execute(
+                            """UPDATE verified_proxies
+                               SET protocol = ?, name = ?, address = ?, port = ?, link = ?,
+                                   latency_ms = -1
+                               WHERE id = ?""",
+                            (proxy.protocol, proxy.name, proxy.address, proxy.port, proxy.link, existing["id"]),
+                        )
+                        await self._db.commit()
+                        updated += 1
+                    except Exception:
+                        pass
             else:
-                # 新节点，插入（延迟默认-1）
+                # 新身份节点，UNIQUE(instance_source_id, instance_node_name, instance_node_address) 保证不重复
                 try:
                     cursor = await self._db.execute(
                         """INSERT OR IGNORE INTO verified_proxies
