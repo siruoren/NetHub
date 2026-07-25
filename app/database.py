@@ -508,11 +508,11 @@ class ProxyDatabase:
             if existing:
                 matched_ids.add(existing["id"])
                 if existing["link"] != proxy.link:
-                    # link 变化，先删除可能冲突的同 link 记录，再更新
+                    # link 变化，先删除其他实例源下冲突的同 link 记录，再更新
                     try:
                         await self._db.execute(
-                            "DELETE FROM verified_proxies WHERE link = ? AND id != ?",
-                            (proxy.link, existing["id"]),
+                            "DELETE FROM verified_proxies WHERE link = ? AND instance_source_id != ?",
+                            (proxy.link, instance_source_id),
                         )
                         await self._db.execute(
                             """UPDATE verified_proxies
@@ -526,14 +526,10 @@ class ProxyDatabase:
                     except Exception:
                         pass
             else:
-                # 新节点，先删除可能冲突的同 link 记录，再插入
+                # 新节点，link 已存在则跳过（不同实例身份匹配到同一 link）
                 try:
-                    await self._db.execute(
-                        "DELETE FROM verified_proxies WHERE link = ?",
-                        (proxy.link,),
-                    )
                     cursor = await self._db.execute(
-                        """INSERT INTO verified_proxies
+                        """INSERT OR IGNORE INTO verified_proxies
                            (protocol, name, address, port, link, latency_ms, instance_source_id,
                             instance_node_name, instance_node_address, created_at)
                            VALUES (?, ?, ?, ?, ?, -1, ?, ?, ?, ?)""",
