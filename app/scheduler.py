@@ -38,14 +38,7 @@ class TaskScheduler:
         """注册默认定时任务并启动调度器"""
         cfg = self.config.scheduler
 
-        # 默认验证和清理任务（使用全局间隔配置）
-        self.scheduler.add_job(
-            self.verify_stored_proxies,
-            "interval",
-            seconds=cfg.verify_interval,
-            id="verify_proxies",
-            name="验证已存节点",
-        )
+        # 清理任务（使用全局间隔配置）
         self.scheduler.add_job(
             self.cleanup_proxies,
             "interval",
@@ -54,8 +47,8 @@ class TaskScheduler:
             name="清理不合格节点",
         )
         self.scheduler.start()
-        logger.info("调度器已启动: verify=%ds, cleanup=%ds",
-                     cfg.verify_interval, cfg.cleanup_interval)
+        logger.info("调度器已启动: cleanup=%ds",
+                     cfg.cleanup_interval)
 
         # 启动后注册订阅任务
         asyncio.create_task(self._register_subscription_jobs())
