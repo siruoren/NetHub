@@ -349,46 +349,26 @@ class ProxyDatabase:
         return cursor.rowcount
 
     async def enforce_max_proxies_with_verified(self, max_count: int) -> int:
-        """全局节点限制（订阅+已验证总数不超限），超限优先删除订阅源节点
+        """全局订阅节点限制（仅限制订阅入库节点总数，不涉及已验证库）
 
-        计算 proxies + verified_proxies 总数，超出部分优先从 proxies 删除
-        （延迟最大、最老的先删），proxies 不够删时再删 verified_proxies
+        超出则优先删除延迟最大、入库最老的订阅节点
         """
         if max_count <= 0:
             return 0
-        p_cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM proxies")
-        proxy_count = (await p_cursor.fetchone())["cnt"]
-        v_cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies")
-        verified_count = (await v_cursor.fetchone())["cnt"]
-        total = proxy_count + verified_count
+        cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM proxies")
+        total = (await cursor.fetchone())["cnt"]
         if total <= max_count:
             return 0
         excess = total - max_count
-        deleted = 0
-        # 优先删订阅源节点
-        if proxy_count > 0:
-            delete_from_proxies = min(excess, proxy_count)
-            cursor = await self._db.execute(
-                """DELETE FROM proxies WHERE id IN (
-                    SELECT id FROM proxies ORDER BY latency_ms DESC, created_at ASC LIMIT ?
-                )""",
-                (delete_from_proxies,),
-            )
-            await self._db.commit()
-            deleted += cursor.rowcount
-            excess -= cursor.rowcount
-        # proxies 不够删时再删 verified_proxies
-        if excess > 0 and verified_count > 0:
-            cursor = await self._db.execute(
-                """DELETE FROM verified_proxies WHERE id IN (
-                    SELECT id FROM verified_proxies ORDER BY latency_ms DESC, created_at ASC LIMIT ?
-                )""",
-                (excess,),
-            )
-            await self._db.commit()
-            deleted += cursor.rowcount
+        cursor = await self._db.execute(
+            """DELETE FROM proxies WHERE id IN (
+                SELECT id FROM proxies ORDER BY latency_ms DESC, created_at ASC LIMIT ?
+            )""",
+            (excess,),
+        )
+        await self._db.commit()
         self._invalidate_stats()
-        return deleted
+        return cursor.rowcount
 
     async def delete_proxies_by_subscription_id(self, subscription_id: int) -> int:
         """删除指定订阅源 ID 下的所有节点，返回删除数量"""

@@ -226,12 +226,12 @@ class TaskScheduler:
                     logger.info("订阅 #%d: 超出订阅节点限制 %d，删除 %d 个延迟最高/入库最老的节点",
                                 sub_id, max_nodes, deleted)
 
-            # 强制执行全局节点限制（订阅+已验证总数不超限，超限优先删订阅源节点）
+            # 全局订阅节点限制（仅限制订阅入库节点总数，不涉及已验证库）
             max_proxies = self.config.scheduler.max_proxies
             if max_proxies > 0:
                 deleted = await self.db.enforce_max_proxies_with_verified(max_proxies)
                 if deleted:
-                    logger.info("超出全局节点限制 %d，优先删除 %d 个订阅源节点", max_proxies, deleted)
+                    logger.info("超出全局订阅节点限制 %d，删除 %d 个延迟最高/入库最老的订阅节点", max_proxies, deleted)
 
         except Exception as e:
             await self.db.batch_update_subscription_meta(sub_id, fetch_status="failed")
@@ -473,7 +473,7 @@ class TaskScheduler:
         4. 全量验证：检测已验证库中该实例下所有节点的延迟
         5. 检测失败的删除，可达的更新延迟
         6. 全局实例节点限制检查
-        7. 全局节点限制检查（订阅+已验证总数不超限，超限优先删订阅源节点）
+        7. 全局订阅节点限制检查（仅限制订阅入库节点总数）
         """
         # 防止并发获取同一实例源
         if source_id in self._fetching_instances:
@@ -546,12 +546,12 @@ class TaskScheduler:
                     logger.info("超出全局实例节点限制 %d，删除 %d 个延迟最高/入库最久的已验证节点",
                                 max_instance_nodes, deleted)
 
-            # 全局节点限制检查（订阅+已验证总数不超限，超限优先删订阅源节点）
+            # 全局订阅节点限制（仅限制订阅入库节点总数，不涉及已验证库）
             max_proxies = self.config.scheduler.max_proxies
             if max_proxies > 0:
                 deleted = await self.db.enforce_max_proxies_with_verified(max_proxies)
                 if deleted:
-                    logger.info("全局节点限制 %d，优先删除 %d 个订阅源节点", max_proxies, deleted)
+                    logger.info("超出全局订阅节点限制 %d，删除 %d 个延迟最高/入库最老的订阅节点", max_proxies, deleted)
 
             # 更新元信息：已入库数 = 已验证库中该实例下的总量
             verified_count = await self.db.get_verified_count_by_instance_id(source_id)
