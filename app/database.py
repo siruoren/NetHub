@@ -800,7 +800,6 @@ class ProxyDatabase:
             empty_days=row["empty_days"] if "empty_days" in row.keys() else 0,
             total_count=row["total_count"] if "total_count" in row.keys() else 0,
             fetch_status=row["fetch_status"] if "fetch_status" in row.keys() else "idle",
-            max_nodes=row["max_nodes"] if "max_nodes" in row.keys() else 0,
         )
 
     # ---- 订阅管理 ----
@@ -847,31 +846,9 @@ class ProxyDatabase:
         rows = await cursor.fetchall()
         return [self._row_to_subscription(row) for row in rows]
 
-    async def enforce_max_subscription_proxies(self, sub_id: int, max_count: int) -> int:
-        """执行订阅源节点入库限制，超出则优先删除延迟最大、入库最老的节点，返回删除数量"""
-        if max_count <= 0:
-            return 0
-        cursor = await self._db.execute(
-            "SELECT COUNT(*) as cnt FROM proxies WHERE subscription_id = ?", (sub_id,)
-        )
-        total = (await cursor.fetchone())["cnt"]
-        if total <= max_count:
-            return 0
-        excess = total - max_count
-        cursor = await self._db.execute(
-            """DELETE FROM proxies WHERE id IN (
-                SELECT id FROM proxies WHERE subscription_id = ?
-                ORDER BY latency_ms DESC, created_at ASC LIMIT ?
-            )""",
-            (sub_id, excess),
-        )
-        await self._db.commit()
-        self._invalidate_stats()
-        return cursor.rowcount
-
     async def update_subscription(self, sub_id: int, **kwargs) -> bool:
         """更新订阅源，支持部分字段更新"""
-        allowed = {"url", "crontab", "latency_threshold", "max_retries", "max_concurrent", "enabled", "max_nodes"}
+        allowed = {"url", "crontab", "latency_threshold", "max_retries", "max_concurrent", "enabled"}
         updates = {}
         for k, v in kwargs.items():
             if k in allowed:

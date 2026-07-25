@@ -211,14 +211,6 @@ class TaskScheduler:
             logger.info("订阅 #%d: 拉取完成 - 新增 %d, 更新延迟 %d, 跳过 %d, 总解析 %d",
                         sub.id, added, len(latency_updates), skipped, len(proxies))
 
-            # 订阅节点限制检查（该订阅入库节点不超限）
-            max_nodes = sub.max_nodes
-            if max_nodes > 0:
-                deleted = await self.db.enforce_max_subscription_proxies(sub_id, max_nodes)
-                if deleted:
-                    logger.info("订阅 #%d: 超出订阅节点限制 %d，删除 %d 个延迟最高/入库最老的节点",
-                                sub_id, max_nodes, deleted)
-
             # 全局订阅节点限制（仅限制订阅入库节点总数，不涉及已验证库）
             max_proxies = self.config.scheduler.max_proxies
             if max_proxies > 0:

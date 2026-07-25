@@ -143,7 +143,6 @@
                                 <th>Crontab</th>
                                 <th>总数</th>
                                 <th>可用数</th>
-                                <th>限制</th>
                                 <th>延迟</th>
                                 <th>状态</th>
                                 <th>操作</th>
@@ -156,7 +155,6 @@
                                 <td><code style="font-size:0.8rem">{{ sub.crontab }}</code></td>
                                 <td><span class="badge bg-secondary">{{ sub.total_count }}</span></td>
                                 <td><span class="badge bg-info">{{ sub_available_counts.get(sub.id, 0) }}</span></td>
-                                <td><span class="badge {{ 'bg-warning text-dark' if sub.max_nodes > 0 else 'bg-light text-dark' }}">{{ sub.max_nodes if sub.max_nodes > 0 else '不限' }}</span></td>
                                 <td>{{ sub.latency_threshold }}ms</td>
                                 <td>
                                     <span class="badge {{ 'bg-success' if sub.enabled else 'bg-secondary' }}" style="cursor:pointer"
@@ -512,10 +510,6 @@
                         <label class="form-label">最大并发数</label>
                         <input type="number" id="edit-concurrent" class="form-control form-control-sm">
                     </div>
-                    <div class="col-md-4">
-                        <label class="form-label">节点限制</label>
-                        <input type="number" id="edit-max-nodes" class="form-control form-control-sm" min="0" placeholder="0=不限">
-                    </div>
                 </div>
             </div>
             <div class="modal-footer">
@@ -716,7 +710,6 @@ function editSubscription(id) {
     document.getElementById('edit-latency').value = sub.latency_threshold;
     document.getElementById('edit-retries').value = sub.max_retries;
     document.getElementById('edit-concurrent').value = sub.max_concurrent;
-    document.getElementById('edit-max-nodes').value = sub.max_nodes || 0;
     new bootstrap.Modal(document.getElementById('editModal')).show();
 }
 
@@ -728,13 +721,11 @@ async function saveSubscription() {
     const latency = document.getElementById('edit-latency').value;
     const retries = document.getElementById('edit-retries').value;
     const concurrent = document.getElementById('edit-concurrent').value;
-    const max_nodes = document.getElementById('edit-max-nodes').value;
     if (url) params.set('url', url);
     if (crontab) params.set('crontab', crontab);
     if (latency) params.set('latency_threshold', latency);
     if (retries) params.set('max_retries', retries);
     if (concurrent) params.set('max_concurrent', concurrent);
-    if (max_nodes !== '' && max_nodes !== undefined) params.set('max_nodes', max_nodes);
     try {
         const resp = await fetch('/api/subscriptions/' + id + '?' + params.toString(), { method: 'PUT' });
         if (resp.ok) { refreshPage(); }

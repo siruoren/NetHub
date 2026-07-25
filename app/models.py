@@ -55,7 +55,6 @@ class SubscriptionRecord:
     empty_days: int  # 连续节点数为0的天数
     total_count: int  # 最新一次拉取的节点地址总数
     fetch_status: str  # 拉取状态: idle / updating / success / failed
-    max_nodes: int  # 该订阅源最大入库节点数，0=不限制
 
 
 @dataclass
