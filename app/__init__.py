@@ -108,6 +108,14 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
             except ValueError:
                 pass
 
+        max_instance_nodes_str = await _db.get_setting("max_instance_nodes", "")
+        if max_instance_nodes_str:
+            try:
+                _config.scheduler.max_instance_nodes = int(max_instance_nodes_str)
+                logger.info("从数据库加载 max_instance_nodes = %d", _config.scheduler.max_instance_nodes)
+            except ValueError:
+                pass
+
         # 初始化检测 URL：仅当数据库为空时插入默认值
         await _db.init_check_urls(DEFAULT_CHECK_URLS)
 

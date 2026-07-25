@@ -12,4 +12,10 @@ services:
     environment:
       - TZ=Asia/Shanghai
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2048M
+        reservations:
+          memory: 128M
 

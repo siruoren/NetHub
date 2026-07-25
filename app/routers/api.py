@@ -169,11 +169,42 @@ async def get_stats():
     stats["last_fetch_time"] = scheduler.last_fetch_time
     stats["last_verify_time"] = scheduler.last_verify_time
     stats["max_proxies"] = config.scheduler.max_proxies
+
+    # 添加每个实例源的节点数和限制信息
+    instance_sources = await db.get_all_instance_sources()
+
+    # 全局实例节点限制（来自配置/数据库设置）
+    stats["max_instance_nodes"] = config.scheduler.max_instance_nodes
+
+    instance_node_info = {}
+    for inst in instance_sources:
+        verified_count = await db.get_verified_count_by_instance_id(inst.id)
+        instance_node_info[inst.id] = {
+            "total_count": verified_count,
+            "connected_count": inst.connected_count,
+        }
+    stats["instance_node_info"] = instance_node_info
+
+    # 添加每个订阅源的节点数和限制信息
+    subscriptions = await db.get_all_subscriptions()
+    sub_node_info = {}
+    for sub in subscriptions:
+        count = await db.get_proxy_count_by_subscription_id(sub.id)
+        sub_node_info[sub.id] = {
+            "node_count": count,
+            "max_nodes": sub.max_nodes,
+        }
+    stats["sub_node_info"] = sub_node_info
+
     return stats
 
 
 class MaxProxiesBody(BaseModel):
     max_proxies: int
+
+
+class MaxInstanceNodesBody(BaseModel):
+    max_instance_nodes: int
 
 
 @router.put("/config/max-proxies")
@@ -189,6 +220,23 @@ async def update_max_proxies(body: MaxProxiesBody):
     # 立即执行一次限制检查（订阅+已验证总数不超限）
     deleted = await db.enforce_max_proxies_with_verified(max_proxies)
     return {"max_proxies": max_proxies, "deleted": deleted}
+
+
+@router.put("/config/max-instance-nodes")
+async def update_max_instance_nodes(body: MaxInstanceNodesBody):
+    """更新所有实例已验证节点总数上限（保存到数据库），0=不限制"""
+    max_instance_nodes = body.max_instance_nodes
+    if max_instance_nodes < 0:
+        return {"error": "max_instance_nodes 不能为负数"}
+    config = get_config()
+    config.scheduler.max_instance_nodes = max_instance_nodes
+    db = get_db()
+    await db.set_setting("max_instance_nodes", str(max_instance_nodes))
+    # 立即执行一次限制检查
+    deleted = 0
+    if max_instance_nodes > 0:
+        deleted = await db.enforce_max_all_verified_proxies(max_instance_nodes)
+    return {"max_instance_nodes": max_instance_nodes, "deleted": deleted}
 
 
 @router.get("/health")
@@ -285,7 +333,8 @@ async def update_subscription(sub_id: int, url: Optional[str] = None,
                                latency_threshold: Optional[float] = None,
                                max_retries: Optional[int] = None,
                                max_concurrent: Optional[int] = None,
-                               enabled: Optional[bool] = None):
+                               enabled: Optional[bool] = None,
+                               max_nodes: Optional[int] = None):
     """更新订阅源"""
     from fastapi import HTTPException
     db = get_db()
@@ -306,6 +355,8 @@ async def update_subscription(sub_id: int, url: Optional[str] = None,
         kwargs["max_concurrent"] = max_concurrent
     if enabled is not None:
         kwargs["enabled"] = enabled
+    if max_nodes is not None:
+        kwargs["max_nodes"] = max_nodes
 
     success = await db.update_subscription(sub_id, **kwargs)
     if not success:
@@ -418,6 +469,7 @@ def _subscription_to_dict(sub) -> dict:
         "empty_days": sub.empty_days,
         "total_count": sub.total_count,
         "fetch_status": sub.fetch_status,
+        "max_nodes": sub.max_nodes,
     }
 
 
@@ -609,6 +661,7 @@ def _instance_source_to_dict(source) -> dict:
         "created_at": source.created_at,
         "total_count": source.total_count,
         "fetch_status": source.fetch_status,
+        "connected_count": source.connected_count,
     }
 
 
@@ -624,6 +677,7 @@ async def export_config():
     config = {
         "version": 1,
         "max_proxies": get_config().scheduler.max_proxies,
+        "max_instance_nodes": get_config().scheduler.max_instance_nodes,
         "subscriptions": [
             {
                 "url": s.url,
@@ -632,6 +686,7 @@ async def export_config():
                 "max_retries": s.max_retries,
                 "max_concurrent": s.max_concurrent,
                 "enabled": s.enabled,
+                "max_nodes": s.max_nodes,
             }
             for s in subs
         ],
@@ -686,6 +741,12 @@ async def import_config(req: ConfigImportRequest):
         get_config().scheduler.max_proxies = max_proxies
         await db.set_setting("max_proxies", str(max_proxies))
 
+    # 导入 max_instance_nodes 设置
+    max_instance_nodes = config.get("max_instance_nodes")
+    if max_instance_nodes and isinstance(max_instance_nodes, int) and max_instance_nodes >= 0:
+        get_config().scheduler.max_instance_nodes = max_instance_nodes
+        await db.set_setting("max_instance_nodes", str(max_instance_nodes))
+
     # 导入订阅源
     for item in config.get("subscriptions", []):
         url = item.get("url", "").strip()
@@ -704,6 +765,10 @@ async def import_config(req: ConfigImportRequest):
             enabled=item.get("enabled", True),
         )
         if sub:
+            # 导入后设置 max_nodes（add_subscription 不包含此字段）
+            max_nodes = item.get("max_nodes", 0)
+            if max_nodes and isinstance(max_nodes, int) and max_nodes > 0:
+                await db.update_subscription(sub.id, max_nodes=max_nodes)
             scheduler._add_subscription_job(sub)
             sub_added += 1
 
