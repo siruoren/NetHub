@@ -402,6 +402,7 @@
                         <td><small>{{ proxy.created_at[:19] if proxy.created_at else '-' }}</small></td>
                         <td>
                             <button class="btn btn-outline-success btn-sm py-0 px-1" style="font-size:0.75rem"
+                                    data-check-id="proxy-{{ proxy.id }}"
                                     onclick="checkProxy({{ proxy.id }}, this)">检测</button>
                             <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem"
                                     onclick="deleteProxy({{ proxy.id }})">删除</button>
@@ -456,6 +457,7 @@
                         <td><small>{{ proxy.created_at[:19] if proxy.created_at else '-' }}</small></td>
                         <td>
                             <button class="btn btn-outline-success btn-sm py-0 px-1" style="font-size:0.75rem"
+                                    data-check-id="verified-{{ proxy.id }}"
                                     onclick="checkVerifiedProxy({{ proxy.id }}, {{ inst.id }}, this)">检测</button>
                             <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem"
                                     onclick="deleteVerifiedProxy({{ proxy.id }}, {{ inst.id }})">删除</button>
@@ -864,12 +866,8 @@ var checkingProxyIds = new Set();
 function restoreCheckingButtons() {
     if (checkingProxyIds.size === 0) return;
     checkingProxyIds.forEach(function(pid) {
-        // 订阅节点按钮
-        var subBtn = document.querySelector('button[onclick="checkProxy(' + pid + ', this)"]');
-        if (subBtn) { subBtn.disabled = true; subBtn.textContent = '检测中...'; }
-        // 已验证节点按钮
-        var verBtn = document.querySelector('button[onclick^="checkVerifiedProxy(' + pid + ',"]');
-        if (verBtn) { verBtn.disabled = true; verBtn.textContent = '检测中...'; }
+        var btn = document.querySelector('[data-check-id="proxy-' + pid + '"], [data-check-id="verified-' + pid + '"]');
+        if (btn) { btn.disabled = true; btn.textContent = '检测中...'; }
     });
 }
 
@@ -1151,7 +1149,7 @@ function refreshPage() {
                         '<td>' + p.port + '</td>' +
                         '<td><span class="' + latencyClass + '">' + Math.round(p.latency_ms) + ' ms</span></td>' +
                         '<td><small>' + timeShort + '</small></td>' +
-                        '<td><button class="btn btn-outline-success btn-sm py-0 px-1" style="font-size:0.75rem" onclick="checkProxy(' + p.id + ', this)">检测</button> <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem" onclick="deleteProxy(' + p.id + ')">删除</button></td>' +
+                        '<td><button class="btn btn-outline-success btn-sm py-0 px-1" style="font-size:0.75rem" data-check-id="proxy-' + p.id + '" onclick="checkProxy(' + p.id + ', this)">检测</button> <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem" onclick="deleteProxy(' + p.id + ')">删除</button></td>' +
                         '</tr>';
                 }).join('');
                 if (!proxies.length) {
@@ -1177,7 +1175,7 @@ function refreshPage() {
                         '<td>' + p.port + '</td>' +
                         '<td><span class="' + latencyClass + '">' + Math.round(p.latency_ms) + ' ms</span></td>' +
                         '<td><small>' + timeShort + '</small></td>' +
-                        '<td><button class="btn btn-outline-success btn-sm py-0 px-1" style="font-size:0.75rem" onclick="checkVerifiedProxy(' + p.id + ', ' + currentInstId + ', this)">检测</button> <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem" onclick="deleteVerifiedProxy(' + p.id + ', ' + currentInstId + ')">删除</button></td>' +
+                        '<td><button class="btn btn-outline-success btn-sm py-0 px-1" style="font-size:0.75rem" data-check-id="verified-' + p.id + '" onclick="checkVerifiedProxy(' + p.id + ', ' + currentInstId + ', this)">检测</button> <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem" onclick="deleteVerifiedProxy(' + p.id + ', ' + currentInstId + ')">删除</button></td>' +
                         '</tr>';
                 }).join('');
                 if (!vProxies.length) {
@@ -1498,7 +1496,7 @@ async function refreshActiveTabNodes() {
                         '<td>' + p.port + '</td>' +
                         '<td><span class="' + latencyClass + '">' + Math.round(p.latency_ms) + ' ms</span></td>' +
                         '<td><small>' + timeShort + '</small></td>' +
-                        '<td><button class="btn btn-outline-success btn-sm py-0 px-1" style="font-size:0.75rem" onclick="checkProxy(' + p.id + ', this)">检测</button> <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem" onclick="deleteProxy(' + p.id + ')">删除</button></td>' +
+                        '<td><button class="btn btn-outline-success btn-sm py-0 px-1" style="font-size:0.75rem" data-check-id="proxy-' + p.id + '" onclick="checkProxy(' + p.id + ', this)">检测</button> <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem" onclick="deleteProxy(' + p.id + ')">删除</button></td>' +
                         '</tr>';
                 }).join('');
                 if (!proxies.length) {
@@ -1532,7 +1530,7 @@ async function refreshActiveTabNodes() {
                         '<td>' + p.port + '</td>' +
                         '<td><span class="' + latencyClass + '">' + Math.round(p.latency_ms) + ' ms</span></td>' +
                         '<td><small>' + timeShort + '</small></td>' +
-                        '<td><button class="btn btn-outline-success btn-sm py-0 px-1" style="font-size:0.75rem" onclick="checkVerifiedProxy(' + p.id + ', ' + instId + ', this)">检测</button> <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem" onclick="deleteVerifiedProxy(' + p.id + ', ' + instId + ')">删除</button></td>' +
+                        '<td><button class="btn btn-outline-success btn-sm py-0 px-1" style="font-size:0.75rem" data-check-id="verified-' + p.id + '" onclick="checkVerifiedProxy(' + p.id + ', ' + instId + ', this)">检测</button> <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem" onclick="deleteVerifiedProxy(' + p.id + ', ' + instId + ')">删除</button></td>' +
                         '</tr>';
                 }).join('');
                 if (!vProxies.length) {
