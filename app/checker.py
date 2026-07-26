@@ -88,7 +88,7 @@ class ProxyChecker:
 
     def __init__(self, check_urls: list[str], timeout: float, max_concurrent: int,
                  socks_port: int = 0, http_port: int = 0,
-                 check_mode: str = "auto", kernel_path: str = "xray",
+                 check_mode: str = "auto", kernel_path: str = "v2ray",
                  check_retries: int = 2):
         """
         Args:
