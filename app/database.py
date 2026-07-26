@@ -513,7 +513,7 @@ class ProxyDatabase:
            - 身份已存在且 link 相同 → 跳过
            - 身份已存在但 link 变化 → UPDATE link 及其他字段
            - 身份不存在 → INSERT
-        3. 不在传入列表中的已存在节点 → DELETE（已断开连接）
+        3. 不在当前已连接列表中的节点保留不清理
         """
         if not items:
             return 0, 0, 0, []
@@ -583,17 +583,9 @@ class ProxyDatabase:
                 except Exception:
                     pass
 
-        # 删除不再连接的节点
-        stale_ids = existing_ids - matched_ids
-        deleted = 0
-        for stale_id in stale_ids:
-            await self._db.execute("DELETE FROM verified_proxies WHERE id = ?", (stale_id,))
-            await self._db.commit()
-            deleted += 1
-
-        if added or updated or deleted:
+        if added or updated:
             self._invalidate_stats()
-        return added, updated, deleted, new_links
+        return added, updated, 0, new_links
 
     async def get_verified_by_instance_id(self, instance_source_id: int) -> list[ProxyDBRecord]:
         """获取指定实例源下的所有已验证节点"""
