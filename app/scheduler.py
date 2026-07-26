@@ -38,17 +38,8 @@ class TaskScheduler:
         """注册默认定时任务并启动调度器"""
         cfg = self.config.scheduler
 
-        # 清理任务（使用全局间隔配置）
-        self.scheduler.add_job(
-            self.cleanup_proxies,
-            "interval",
-            seconds=cfg.cleanup_interval,
-            id="cleanup_proxies",
-            name="清理不合格节点",
-        )
         self.scheduler.start()
-        logger.info("调度器已启动: cleanup=%ds",
-                     cfg.cleanup_interval)
+        logger.info("调度器已启动")
 
         # 启动后注册订阅任务
         asyncio.create_task(self._register_subscription_jobs())
@@ -656,21 +647,6 @@ class TaskScheduler:
 
         logger.info("实例源 #%d: 导入完成, 新增 %d 个订阅源", source_id, new_sub_count)
         return new_sub_count
-
-    async def cleanup_proxies(self) -> None:
-        """清理空订阅源
-
-        检测失败的节点已在验证时直接删除，无需按 fail_count 清理。
-        仅清理连续7天节点数为0的订阅源。
-        """
-        empty_subs = await self.db.get_subscriptions_with_empty_days(7)
-        for sub in empty_subs:
-            # 再次确认该订阅源下确实没有节点
-            count = await self.db.get_proxy_count_by_subscription_id(sub.id)
-            if count == 0:
-                await self.db.delete_subscription(sub.id)
-                self.remove_subscription_job(sub.id)
-                logger.info("清理订阅: 删除 #%d 连续7天无节点 (%s)", sub.id, sub.url[:50])
 
     @property
     def last_fetch_time(self) -> str:

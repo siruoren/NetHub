@@ -898,14 +898,6 @@ class ProxyDatabase:
         )
         await self._db.commit()
 
-    async def get_subscriptions_with_empty_days(self, min_days: int) -> list[SubscriptionRecord]:
-        """获取连续空节点天数 >= min_days 的订阅源"""
-        cursor = await self._db.execute(
-            "SELECT * FROM subscriptions WHERE empty_days >= ?", (min_days,)
-        )
-        rows = await cursor.fetchall()
-        return [self._row_to_subscription(row) for row in rows]
-
     async def batch_update_subscription_meta(self, sub_id: int,
                                               total_count: int = None,
                                               fetch_status: str = None,

@@ -19,5 +19,4 @@ check:
 scheduler:
   fetch_interval: 3600
   verify_interval: 1800
-  cleanup_interval: 7200
   max_fail_count: 3
