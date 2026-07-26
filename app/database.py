@@ -501,11 +501,11 @@ class ProxyDatabase:
     async def sync_verified_proxies(
         self,
         items: list[tuple[ProxyInfo, str, str, int]],
-    ) -> tuple[int, int, int]:
+    ) -> tuple[int, int, int, list[str]]:
         """基于实例节点身份精准同步已验证节点
 
         items: [(ProxyInfo, instance_node_name, instance_node_address, instance_source_id), ...]
-        返回: (新增数, 更新数, 删除数)
+        返回: (新增数, 更新数, 删除数, 新增节点的link列表)
 
         逻辑：
         1. 获取该实例下所有已验证节点，按 (instance_node_name, instance_node_address) 建索引
@@ -516,7 +516,7 @@ class ProxyDatabase:
         3. 不在传入列表中的已存在节点 → DELETE（已断开连接）
         """
         if not items:
-            return 0, 0, 0
+            return 0, 0, 0, []
 
         instance_source_id = items[0][3]
         now = datetime.now(timezone(timedelta(hours=8))).isoformat()
@@ -542,6 +542,7 @@ class ProxyDatabase:
 
         added = 0
         updated = 0
+        new_links: list[str] = []
         matched_ids: set[int] = set()
 
         for proxy, inst_name, inst_addr, _source_id in items:
@@ -578,6 +579,7 @@ class ProxyDatabase:
                     await self._db.commit()
                     if cursor.rowcount > 0:
                         added += 1
+                        new_links.append(proxy.link)
                 except Exception:
                     pass
 
@@ -591,7 +593,7 @@ class ProxyDatabase:
 
         if added or updated or deleted:
             self._invalidate_stats()
-        return added, updated, deleted
+        return added, updated, deleted, new_links
 
     async def get_verified_by_instance_id(self, instance_source_id: int) -> list[ProxyDBRecord]:
         """获取指定实例源下的所有已验证节点"""
@@ -800,7 +802,6 @@ class ProxyDatabase:
             empty_days=row["empty_days"] if "empty_days" in row.keys() else 0,
             total_count=row["total_count"] if "total_count" in row.keys() else 0,
             fetch_status=row["fetch_status"] if "fetch_status" in row.keys() else "idle",
-            max_nodes=row["max_nodes"] if "max_nodes" in row.keys() else 0,
         )
 
     # ---- 订阅管理 ----
@@ -847,31 +848,9 @@ class ProxyDatabase:
         rows = await cursor.fetchall()
         return [self._row_to_subscription(row) for row in rows]
 
-    async def enforce_max_subscription_proxies(self, sub_id: int, max_count: int) -> int:
-        """执行订阅源节点入库限制，超出则优先删除延迟最大、入库最老的节点，返回删除数量"""
-        if max_count <= 0:
-            return 0
-        cursor = await self._db.execute(
-            "SELECT COUNT(*) as cnt FROM proxies WHERE subscription_id = ?", (sub_id,)
-        )
-        total = (await cursor.fetchone())["cnt"]
-        if total <= max_count:
-            return 0
-        excess = total - max_count
-        cursor = await self._db.execute(
-            """DELETE FROM proxies WHERE id IN (
-                SELECT id FROM proxies WHERE subscription_id = ?
-                ORDER BY latency_ms DESC, created_at ASC LIMIT ?
-            )""",
-            (sub_id, excess),
-        )
-        await self._db.commit()
-        self._invalidate_stats()
-        return cursor.rowcount
-
     async def update_subscription(self, sub_id: int, **kwargs) -> bool:
         """更新订阅源，支持部分字段更新"""
-        allowed = {"url", "crontab", "latency_threshold", "max_retries", "max_concurrent", "enabled", "max_nodes"}
+        allowed = {"url", "crontab", "latency_threshold", "max_retries", "max_concurrent", "enabled"}
         updates = {}
         for k, v in kwargs.items():
             if k in allowed:
@@ -920,14 +899,6 @@ class ProxyDatabase:
             (sub_id,),
         )
         await self._db.commit()
-
-    async def get_subscriptions_with_empty_days(self, min_days: int) -> list[SubscriptionRecord]:
-        """获取连续空节点天数 >= min_days 的订阅源"""
-        cursor = await self._db.execute(
-            "SELECT * FROM subscriptions WHERE empty_days >= ?", (min_days,)
-        )
-        rows = await cursor.fetchall()
-        return [self._row_to_subscription(row) for row in rows]
 
     async def batch_update_subscription_meta(self, sub_id: int,
                                               total_count: int = None,

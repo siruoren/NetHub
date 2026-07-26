@@ -85,7 +85,6 @@ check:
 scheduler:
   fetch_interval: 3600           # 拉取订阅间隔（秒）
   verify_interval: 1800          # 验证节点间隔（秒）
-  cleanup_interval: 7200         # 清理间隔（秒）
   max_proxies: 500               # 最大节点数量，超出按延迟+入库时间删除
 ```
 

@@ -38,17 +38,8 @@ class TaskScheduler:
         """注册默认定时任务并启动调度器"""
         cfg = self.config.scheduler
 
-        # 清理任务（使用全局间隔配置）
-        self.scheduler.add_job(
-            self.cleanup_proxies,
-            "interval",
-            seconds=cfg.cleanup_interval,
-            id="cleanup_proxies",
-            name="清理不合格节点",
-        )
         self.scheduler.start()
-        logger.info("调度器已启动: cleanup=%ds",
-                     cfg.cleanup_interval)
+        logger.info("调度器已启动")
 
         # 启动后注册订阅任务
         asyncio.create_task(self._register_subscription_jobs())
@@ -210,14 +201,6 @@ class TaskScheduler:
             self._last_fetch_time = datetime.now(timezone(timedelta(hours=8))).isoformat()
             logger.info("订阅 #%d: 拉取完成 - 新增 %d, 更新延迟 %d, 跳过 %d, 总解析 %d",
                         sub.id, added, len(latency_updates), skipped, len(proxies))
-
-            # 订阅节点限制检查（该订阅入库节点不超限）
-            max_nodes = sub.max_nodes
-            if max_nodes > 0:
-                deleted = await self.db.enforce_max_subscription_proxies(sub_id, max_nodes)
-                if deleted:
-                    logger.info("订阅 #%d: 超出订阅节点限制 %d，删除 %d 个延迟最高/入库最老的节点",
-                                sub_id, max_nodes, deleted)
 
             # 全局订阅节点限制（仅限制订阅入库节点总数，不涉及已验证库）
             max_proxies = self.config.scheduler.max_proxies
@@ -517,16 +500,18 @@ class TaskScheduler:
                     (proxy, inst_name, inst_addr, source_id)
                     for proxy, inst_name, inst_addr in proxies
                 ]
-                added, updated, deleted_sync = await self.db.sync_verified_proxies(sync_items)
-                logger.info("实例源 #%d: 同步完成 - 新增 %d, 更新 %d, 删除断开 %d，开始全量验证...",
+                added, updated, deleted_sync, new_links = await self.db.sync_verified_proxies(sync_items)
+                logger.info("实例源 #%d: 同步完成 - 新增 %d, 更新 %d, 删除断开 %d",
                             source.id, added, updated, deleted_sync)
 
-                # 全量验证已验证库中该实例下所有节点的可用性
-                try:
-                    await self._verify_instance_verified(source_id)
-                except Exception as verify_error:
-                    logger.error("实例源 #%d: 验证过程异常: %s", source.id, verify_error)
-                    # 验证失败也继续更新状态，避免卡在updating
+                # 仅检测新增节点的延迟
+                if new_links:
+                    try:
+                        await self._verify_new_instance_nodes(source_id, new_links)
+                    except Exception as verify_error:
+                        logger.error("实例源 #%d: 新增节点验证异常: %s", source.id, verify_error)
+                else:
+                    logger.info("实例源 #%d: 无新增节点，跳过延迟检测", source.id)
             else:
                 # 无已连接节点，清空该实例的已验证记录
                 await self.db.delete_verified_by_instance_id(source_id)
@@ -561,10 +546,64 @@ class TaskScheduler:
         finally:
             self._fetching_instances.discard(source_id)
 
+    async def _verify_new_instance_nodes(self, source_id: int, new_links: list[str]) -> None:
+        """仅检测新增节点的延迟，检测失败或超阈值则删除
+
+        使用实例源的延迟阈值过滤
+        """
+        try:
+            source = await self.db.get_instance_source_by_id(source_id)
+            if not source:
+                return
+
+            max_latency = source.latency_threshold
+            logger.info("实例源 #%d: 检测 %d 个新增节点延迟（阈值 %.1fms）...",
+                       source_id, len(new_links), max_latency)
+            results = await self.checker.check_batch(new_links)
+
+            # 查询新增节点在 verified_proxies 中的 id
+            proxies = await self.db.get_verified_by_instance_id(source_id)
+            link_to_proxy = {p.link: p for p in proxies}
+
+            latency_updates = []
+            delete_ids = []
+            for link in new_links:
+                latency = results.get(link)
+                proxy = link_to_proxy.get(link)
+                if not proxy:
+                    continue
+                if latency is not None:
+                    if latency <= max_latency:
+                        latency_updates.append((proxy.id, latency))
+                    else:
+                        logger.debug("实例源 #%d: 新节点 %s 延迟 %dms 超过阈值 %.1fms，删除",
+                                   source_id, proxy.name[:30], latency, max_latency)
+                        delete_ids.append(proxy.id)
+                else:
+                    logger.debug("实例源 #%d: 新节点 %s 检测失败，删除", source_id, proxy.name[:30])
+                    delete_ids.append(proxy.id)
+
+            if latency_updates:
+                await self.db.batch_update_verified_latency(latency_updates)
+                latencies = [lat for _, lat in latency_updates]
+                if latencies:
+                    avg_latency = sum(latencies) / len(latencies)
+                    min_latency = min(latencies)
+                    max_latency= max(latencies)
+                    logger.info("实例源 #%d: 新增节点延迟分布 - 平均 %.1fms, 最小 %.1fms, 最大 %.1fms",
+                                source_id, avg_latency, min_latency, max_latency)
+            if delete_ids:
+                await self.db.batch_delete_verified(delete_ids)
+            logger.info("实例源 #%d: 新增节点验证完成 - 成功 %d, 删除 %d",
+                        source_id, len(latency_updates), len(delete_ids))
+        except Exception as e:
+            logger.error("实例源 #%d: 新增节点验证异常: %s", source_id, e, exc_info=True)
+
     async def _verify_instance_verified(self, source_id: int) -> None:
         """验证已验证库中指定实例下所有节点的可用性，检测失败则删除
 
         使用实例源的延迟阈值过滤：延迟超过阈值的节点也会被删除
+        （仅用于手动触发全量验证）
         """
         try:
             source = await self.db.get_instance_source_by_id(source_id)
@@ -664,21 +703,6 @@ class TaskScheduler:
 
         logger.info("实例源 #%d: 导入完成, 新增 %d 个订阅源", source_id, new_sub_count)
         return new_sub_count
-
-    async def cleanup_proxies(self) -> None:
-        """清理空订阅源
-
-        检测失败的节点已在验证时直接删除，无需按 fail_count 清理。
-        仅清理连续7天节点数为0的订阅源。
-        """
-        empty_subs = await self.db.get_subscriptions_with_empty_days(7)
-        for sub in empty_subs:
-            # 再次确认该订阅源下确实没有节点
-            count = await self.db.get_proxy_count_by_subscription_id(sub.id)
-            if count == 0:
-                await self.db.delete_subscription(sub.id)
-                self.remove_subscription_job(sub.id)
-                logger.info("清理订阅: 删除 #%d 连续7天无节点 (%s)", sub.id, sub.url[:50])
 
     @property
     def last_fetch_time(self) -> str:

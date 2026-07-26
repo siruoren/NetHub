@@ -192,7 +192,6 @@ async def get_stats():
         count = await db.get_proxy_count_by_subscription_id(sub.id)
         sub_node_info[sub.id] = {
             "node_count": count,
-            "max_nodes": sub.max_nodes,
         }
     stats["sub_node_info"] = sub_node_info
 
@@ -333,8 +332,7 @@ async def update_subscription(sub_id: int, url: Optional[str] = None,
                                latency_threshold: Optional[float] = None,
                                max_retries: Optional[int] = None,
                                max_concurrent: Optional[int] = None,
-                               enabled: Optional[bool] = None,
-                               max_nodes: Optional[int] = None):
+                               enabled: Optional[bool] = None):
     """更新订阅源"""
     from fastapi import HTTPException
     db = get_db()
@@ -355,8 +353,6 @@ async def update_subscription(sub_id: int, url: Optional[str] = None,
         kwargs["max_concurrent"] = max_concurrent
     if enabled is not None:
         kwargs["enabled"] = enabled
-    if max_nodes is not None:
-        kwargs["max_nodes"] = max_nodes
 
     success = await db.update_subscription(sub_id, **kwargs)
     if not success:
@@ -469,7 +465,6 @@ def _subscription_to_dict(sub) -> dict:
         "empty_days": sub.empty_days,
         "total_count": sub.total_count,
         "fetch_status": sub.fetch_status,
-        "max_nodes": sub.max_nodes,
     }
 
 
@@ -686,7 +681,6 @@ async def export_config():
                 "max_retries": s.max_retries,
                 "max_concurrent": s.max_concurrent,
                 "enabled": s.enabled,
-                "max_nodes": s.max_nodes,
             }
             for s in subs
         ],
@@ -765,10 +759,6 @@ async def import_config(req: ConfigImportRequest):
             enabled=item.get("enabled", True),
         )
         if sub:
-            # 导入后设置 max_nodes（add_subscription 不包含此字段）
-            max_nodes = item.get("max_nodes", 0)
-            if max_nodes and isinstance(max_nodes, int) and max_nodes > 0:
-                await db.update_subscription(sub.id, max_nodes=max_nodes)
             scheduler._add_subscription_job(sub)
             sub_added += 1
 

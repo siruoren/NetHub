@@ -64,8 +64,7 @@ async def index(request: Request):
         [{"id": s.id, "url": s.url, "crontab": s.crontab,
           "latency_threshold": s.latency_threshold, "max_retries": s.max_retries,
           "max_concurrent": s.max_concurrent, "enabled": s.enabled,
-          "available_count": sub_available_counts.get(s.id, 0),
-          "max_nodes": s.max_nodes} for s in subscriptions],
+          "available_count": sub_available_counts.get(s.id, 0)} for s in subscriptions],
         ensure_ascii=False,
     )
 
