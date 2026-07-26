@@ -38,6 +38,22 @@ async def get_all_proxies():
     }
 
 
+@router.post("/proxies/{proxy_id}/check")
+async def check_proxy_latency(proxy_id: int):
+    """检测单个订阅节点的延迟"""
+    db = get_db()
+    checker = get_checker()
+    link = await db.get_proxy_link_by_id(proxy_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="节点不存在")
+    latency = await checker.check_proxy(link)
+    if latency is not None:
+        await db.batch_update_latency([(proxy_id, latency)])
+        return {"id": proxy_id, "latency_ms": latency, "status": "ok"}
+    else:
+        return {"id": proxy_id, "latency_ms": None, "status": "failed", "message": "节点不可达"}
+
+
 @router.delete("/proxies/{proxy_id}")
 async def delete_proxy(proxy_id: int):
     """删除指定节点"""
@@ -64,10 +80,10 @@ async def v2ray_subscription():
     config = get_config()
     proxies = await db.get_subscription_output_proxies(config.check.latency_threshold)
     verified = await db.get_all_verified_proxies(config.check.latency_threshold)
-    # 去重：已验证库中与订阅源重复的节点不输出
-    existing_links = {p.link for p in proxies}
+    # 去重：已验证库中与订阅源重复的节点不输出（以协议+地址+端口去重）
+    existing_keys = {(p.protocol, p.address, p.port) for p in proxies}
     for vp in verified:
-        if vp.link not in existing_links:
+        if (vp.protocol, vp.address, vp.port) not in existing_keys:
             proxies.append(vp)
     content = generate_v2ray_subscription(proxies)
     return _subscription_response(content, "text/plain")
@@ -83,10 +99,10 @@ async def plain_subscription():
     config = get_config()
     proxies = await db.get_subscription_output_proxies(config.check.latency_threshold)
     verified = await db.get_all_verified_proxies(config.check.latency_threshold)
-    # 去重：已验证库中与订阅源重复的节点不输出
-    existing_links = {p.link for p in proxies}
+    # 去重：已验证库中与订阅源重复的节点不输出（以协议+地址+端口去重）
+    existing_keys = {(p.protocol, p.address, p.port) for p in proxies}
     for vp in verified:
-        if vp.link not in existing_links:
+        if (vp.protocol, vp.address, vp.port) not in existing_keys:
             proxies.append(vp)
     content = generate_plain_subscription(proxies)
     return _subscription_response(content, "text/plain")
@@ -102,10 +118,10 @@ async def clash_subscription():
     config = get_config()
     proxies = await db.get_subscription_output_proxies(config.check.latency_threshold)
     verified = await db.get_all_verified_proxies(config.check.latency_threshold)
-    # 去重：已验证库中与订阅源重复的节点不输出
-    existing_links = {p.link for p in proxies}
+    # 去重：已验证库中与订阅源重复的节点不输出（以协议+地址+端口去重）
+    existing_keys = {(p.protocol, p.address, p.port) for p in proxies}
     for vp in verified:
-        if vp.link not in existing_links:
+        if (vp.protocol, vp.address, vp.port) not in existing_keys:
             proxies.append(vp)
     content = generate_clash_subscription(proxies)
     return _subscription_response(content, "text/yaml")
@@ -411,6 +427,22 @@ async def get_verified_proxies_grouped():
         if vp:
             result[str(inst.id)] = [_proxy_to_dict(p) for p in vp]
     return {"verified_grouped": result}
+
+
+@router.post("/verified-proxies/{proxy_id}/check")
+async def check_verified_proxy_latency(proxy_id: int):
+    """检测单个已验证节点的延迟"""
+    db = get_db()
+    checker = get_checker()
+    link = await db.get_verified_proxy_link_by_id(proxy_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="已验证节点不存在")
+    latency = await checker.check_proxy(link)
+    if latency is not None:
+        await db.batch_update_verified_latency([(proxy_id, latency)])
+        return {"id": proxy_id, "latency_ms": latency, "status": "ok"}
+    else:
+        return {"id": proxy_id, "latency_ms": None, "status": "failed", "message": "节点不可达"}
 
 
 @router.delete("/verified-proxies/{proxy_id}")

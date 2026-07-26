@@ -41,13 +41,14 @@ class ProxyDatabase:
                 name             TEXT    NOT NULL DEFAULT '',
                 address          TEXT    NOT NULL DEFAULT '',
                 port             TEXT    NOT NULL DEFAULT '',
-                link             TEXT    NOT NULL UNIQUE,
+                link             TEXT    NOT NULL,
                 latency_ms       REAL    DEFAULT -1,
                 fail_count       INTEGER DEFAULT 0,
                 subscription_id  INTEGER NOT NULL DEFAULT 0,
                 last_check_time  TEXT    DEFAULT '',
                 last_success_time TEXT   DEFAULT '',
-                created_at       TEXT    DEFAULT ''
+                created_at       TEXT    DEFAULT '',
+                UNIQUE(protocol, address, port)
             );
 
             CREATE INDEX IF NOT EXISTS idx_proxies_protocol ON proxies(protocol);
@@ -114,7 +115,7 @@ class ProxyDatabase:
                 instance_node_name TEXT  NOT NULL DEFAULT '',
                 instance_node_address TEXT NOT NULL DEFAULT '',
                 created_at       TEXT    DEFAULT '',
-                UNIQUE(instance_source_id, instance_node_name, instance_node_address)
+                UNIQUE(instance_source_id, protocol, address, port)
             );
 
             CREATE INDEX IF NOT EXISTS idx_verified_proxies_protocol ON verified_proxies(protocol);
@@ -135,25 +136,25 @@ class ProxyDatabase:
         except Exception:
             pass
 
-        # 迁移后创建组合索引（列可能由 ALTER TABLE 添加，必须在迁移之后）
+        # 迁移：重建 verified_proxies 表，将 UNIQUE 约束统一为 (instance_source_id, protocol, address, port)
+        # 同时处理旧表 link UNIQUE → (instance_source_id, protocol, address, port)
+        # 和旧表 (instance_source_id, instance_node_name, instance_node_address) → (instance_source_id, protocol, address, port)
         try:
-            await self._db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_verified_proxies_inst_node ON verified_proxies(instance_source_id, instance_node_name, instance_node_address)"
-            )
-            await self._db.commit()
-        except Exception:
-            pass
-
-        # 迁移：重建 verified_proxies 表，将 UNIQUE 约束从 link 改为 (instance_source_id, instance_node_name, instance_node_address)
-        try:
-            # 检测旧表是否仍有 link UNIQUE 约束（新表不会触发）
             cursor = await self._db.execute("PRAGMA index_list(verified_proxies)")
             indexes = await cursor.fetchall()
-            has_link_unique = any(
-                idx["name"] == "sqlite_autoindex_verified_proxies_1"
-                for idx in indexes
-            )
-            if has_link_unique:
+            # 检测是否需要迁移：旧表的 UNIQUE 约束不是 (instance_source_id, protocol, address, port)
+            needs_migration = False
+            for idx in indexes:
+                if idx["name"].startswith("sqlite_autoindex_"):
+                    # 获取该索引的列
+                    col_cursor = await self._db.execute("PRAGMA index_info(?)", (idx["name"],))
+                    cols = await col_cursor.fetchall()
+                    col_names = [c["name"] for c in cols]
+                    if sorted(col_names) != sorted(["instance_source_id", "protocol", "address", "port"]):
+                        needs_migration = True
+                        break
+
+            if needs_migration:
                 await self._db.executescript("""
                     CREATE TABLE IF NOT EXISTS verified_proxies_new (
                         id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -167,7 +168,7 @@ class ProxyDatabase:
                         instance_node_name TEXT  NOT NULL DEFAULT '',
                         instance_node_address TEXT NOT NULL DEFAULT '',
                         created_at       TEXT    DEFAULT '',
-                        UNIQUE(instance_source_id, instance_node_name, instance_node_address)
+                        UNIQUE(instance_source_id, protocol, address, port)
                     );
                     INSERT OR IGNORE INTO verified_proxies_new
                         SELECT id, protocol, name, address, port, link, latency_ms,
@@ -181,7 +182,6 @@ class ProxyDatabase:
                 await self._db.execute("CREATE INDEX IF NOT EXISTS idx_verified_proxies_protocol ON verified_proxies(protocol)")
                 await self._db.execute("CREATE INDEX IF NOT EXISTS idx_verified_proxies_instance_id ON verified_proxies(instance_source_id)")
                 await self._db.execute("CREATE INDEX IF NOT EXISTS idx_verified_proxies_link ON verified_proxies(link)")
-                await self._db.execute("CREATE INDEX IF NOT EXISTS idx_verified_proxies_inst_node ON verified_proxies(instance_source_id, instance_node_name, instance_node_address)")
                 await self._db.commit()
         except Exception:
             pass
@@ -190,6 +190,56 @@ class ProxyDatabase:
         try:
             await self._db.execute("ALTER TABLE proxies ADD COLUMN subscription_id INTEGER NOT NULL DEFAULT 0")
             await self._db.commit()
+        except Exception:
+            pass
+
+        # 迁移：重建 proxies 表，将 UNIQUE 约束从 link 改为 (protocol, address, port)
+        try:
+            cursor = await self._db.execute("PRAGMA index_list(proxies)")
+            indexes = await cursor.fetchall()
+            needs_migration = False
+            for idx in indexes:
+                if idx["name"].startswith("sqlite_autoindex_"):
+                    col_cursor = await self._db.execute("PRAGMA index_info(?)", (idx["name"],))
+                    cols = await col_cursor.fetchall()
+                    col_names = [c["name"] for c in cols]
+                    if sorted(col_names) != sorted(["protocol", "address", "port"]):
+                        needs_migration = True
+                        break
+
+            if needs_migration:
+                await self._db.executescript("""
+                    CREATE TABLE IF NOT EXISTS proxies_new (
+                        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                        protocol         TEXT    NOT NULL,
+                        name             TEXT    NOT NULL DEFAULT '',
+                        address          TEXT    NOT NULL DEFAULT '',
+                        port             TEXT    NOT NULL DEFAULT '',
+                        link             TEXT    NOT NULL,
+                        latency_ms       REAL    DEFAULT -1,
+                        fail_count       INTEGER DEFAULT 0,
+                        subscription_id  INTEGER NOT NULL DEFAULT 0,
+                        last_check_time  TEXT    DEFAULT '',
+                        last_success_time TEXT   DEFAULT '',
+                        created_at       TEXT    DEFAULT '',
+                        UNIQUE(protocol, address, port)
+                    );
+                    INSERT OR IGNORE INTO proxies_new
+                        SELECT id, protocol, name, address, port, link, latency_ms, fail_count,
+                               subscription_id, last_check_time, last_success_time, created_at
+                        FROM proxies;
+                    DROP TABLE proxies;
+                    ALTER TABLE proxies_new RENAME TO proxies;
+                """)
+                await self._db.commit()
+                # 重建索引
+                await self._db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_protocol ON proxies(protocol)")
+                await self._db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_latency ON proxies(latency_ms)")
+                await self._db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_link ON proxies(link)")
+                await self._db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_sub_id ON proxies(subscription_id)")
+                await self._db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_sub_created ON proxies(subscription_id, created_at)")
+                await self._db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_available ON proxies(latency_ms, fail_count, subscription_id)")
+                await self._db.commit()
         except Exception:
             pass
 
@@ -359,6 +409,22 @@ class ProxyDatabase:
             await self._db.commit()
             self._invalidate_stats()
 
+    async def get_proxy_link_by_id(self, proxy_id: int) -> str | None:
+        """获取订阅节点库中指定 ID 的 link"""
+        cursor = await self._db.execute(
+            "SELECT link FROM proxies WHERE id = ?", (proxy_id,)
+        )
+        row = await cursor.fetchone()
+        return row["link"] if row else None
+
+    async def get_verified_proxy_link_by_id(self, proxy_id: int) -> str | None:
+        """获取已验证节点库中指定 ID 的 link"""
+        cursor = await self._db.execute(
+            "SELECT link FROM verified_proxies WHERE id = ?", (proxy_id,)
+        )
+        row = await cursor.fetchone()
+        return row["link"] if row else None
+
     async def delete_proxy(self, proxy_id: int) -> None:
         """删除指定节点"""
         await self._db.execute("DELETE FROM proxies WHERE id = ?", (proxy_id,))
@@ -502,18 +568,18 @@ class ProxyDatabase:
         self,
         items: list[tuple[ProxyInfo, str, str, int]],
     ) -> tuple[int, int, int, list[str]]:
-        """基于实例节点身份精准同步已验证节点
+        """基于协议+地址+端口精准同步已验证节点
 
         items: [(ProxyInfo, instance_node_name, instance_node_address, instance_source_id), ...]
         返回: (新增数, 更新数, 删除数, 新增节点的link列表)
 
         逻辑：
-        1. 获取该实例下所有已验证节点，按 (instance_node_name, instance_node_address) 建索引
+        1. 获取该实例下所有已验证节点，按 (protocol, address, port) 建索引
         2. 遍历传入的节点：
-           - 身份已存在且 link 相同 → 跳过
-           - 身份已存在但 link 变化 → UPDATE link 及其他字段
-           - 身份不存在 → INSERT
-        3. 不在传入列表中的已存在节点 → DELETE（已断开连接）
+           - 协议+地址+端口已存在且 link 相同 → 跳过
+           - 协议+地址+端口已存在但 link 变化 → UPDATE link 及其他字段
+           - 协议+地址+端口不存在 → INSERT
+        3. 不在当前已连接列表中的节点保留不清理
         """
         if not items:
             return 0, 0, 0, []
@@ -528,45 +594,45 @@ class ProxyDatabase:
         )
         rows = await cursor.fetchall()
 
-        # 按 (instance_node_name, instance_node_address) 建索引
-        existing_map: dict[tuple[str, str], dict] = {}
-        existing_ids: set[int] = set()
+        # 按 (protocol, address, port) 建索引，同 key 保留最新 id
+        existing_map: dict[tuple[str, str, str], dict] = {}
         for row in rows:
-            key = (row["instance_node_name"] or "", row["instance_node_address"] or "")
+            key = (row["protocol"], row["address"], row["port"])
             existing_map[key] = {
                 "id": row["id"],
                 "link": row["link"],
                 "latency_ms": row["latency_ms"],
+                "instance_node_name": row["instance_node_name"] or "",
+                "instance_node_address": row["instance_node_address"] or "",
             }
-            existing_ids.add(row["id"])
 
         added = 0
         updated = 0
         new_links: list[str] = []
-        matched_ids: set[int] = set()
+        matched_keys: set[tuple[str, str, str]] = set()
 
         for proxy, inst_name, inst_addr, _source_id in items:
-            key = (inst_name, inst_addr)
+            key = (proxy.protocol, proxy.address, proxy.port)
+            matched_keys.add(key)
             existing = existing_map.get(key)
 
             if existing:
-                matched_ids.add(existing["id"])
                 if existing["link"] != proxy.link:
                     # link 变化，更新节点信息并重置延迟
                     try:
                         await self._db.execute(
                             """UPDATE verified_proxies
-                               SET protocol = ?, name = ?, address = ?, port = ?, link = ?,
-                                   latency_ms = -1
+                               SET name = ?, link = ?, latency_ms = -1,
+                                   instance_node_name = ?, instance_node_address = ?
                                WHERE id = ?""",
-                            (proxy.protocol, proxy.name, proxy.address, proxy.port, proxy.link, existing["id"]),
+                            (proxy.name, proxy.link, inst_name, inst_addr, existing["id"]),
                         )
                         await self._db.commit()
                         updated += 1
                     except Exception:
                         pass
             else:
-                # 新身份节点，UNIQUE(instance_source_id, instance_node_name, instance_node_address) 保证不重复
+                # 新节点，UNIQUE(instance_source_id, protocol, address, port) 保证不重复
                 try:
                     cursor = await self._db.execute(
                         """INSERT OR IGNORE INTO verified_proxies
@@ -583,17 +649,9 @@ class ProxyDatabase:
                 except Exception:
                     pass
 
-        # 删除不再连接的节点
-        stale_ids = existing_ids - matched_ids
-        deleted = 0
-        for stale_id in stale_ids:
-            await self._db.execute("DELETE FROM verified_proxies WHERE id = ?", (stale_id,))
-            await self._db.commit()
-            deleted += 1
-
-        if added or updated or deleted:
+        if added or updated:
             self._invalidate_stats()
-        return added, updated, deleted, new_links
+        return added, updated, 0, new_links
 
     async def get_verified_by_instance_id(self, instance_source_id: int) -> list[ProxyDBRecord]:
         """获取指定实例源下的所有已验证节点"""
@@ -687,20 +745,22 @@ class ProxyDatabase:
         verified_rows = await v_cursor.fetchall()
         verified_records = [self._row_to_verified_record(row) for row in verified_rows]
 
-        # 按 link 去重（已验证库优先）
-        seen_links = set()
+        # 按 (protocol, address, port) 去重（已验证库优先）
+        seen_keys = set()
         output_proxies = []
 
         # 先添加已验证库节点
         for record in verified_records:
-            if record.link not in seen_links:
-                seen_links.add(record.link)
+            key = (record.protocol, record.address, record.port)
+            if key not in seen_keys:
+                seen_keys.add(key)
                 output_proxies.append(record)
 
-        # 再添加订阅库节点（跳过已存在的 link）
+        # 再添加订阅库节点（跳过已存在的协议+地址+端口）
         for record in proxy_records:
-            if record.link not in seen_links:
-                seen_links.add(record.link)
+            key = (record.protocol, record.address, record.port)
+            if key not in seen_keys:
+                seen_keys.add(key)
                 output_proxies.append(record)
 
         # 按延迟排序
@@ -715,6 +775,21 @@ class ProxyDatabase:
         row = await cursor.fetchone()
         return self._row_to_record(row) if row else None
 
+    async def get_proxies_by_keys(self, keys: list[tuple[str, str, str]]) -> dict[tuple[str, str, str], ProxyDBRecord]:
+        """根据 (protocol, address, port) 批量查询订阅节点，返回 key→ProxyDBRecord 映射"""
+        if not keys:
+            return {}
+        result = {}
+        for protocol, address, port in keys:
+            cursor = await self._db.execute(
+                "SELECT * FROM proxies WHERE protocol = ? AND address = ? AND port = ?",
+                (protocol, address, port),
+            )
+            row = await cursor.fetchone()
+            if row:
+                result[(row["protocol"], row["address"], row["port"])] = self._row_to_record(row)
+        return result
+
     async def get_proxies_by_links(self, links: list[str]) -> dict[str, ProxyDBRecord]:
         """根据 link 列表批量查询节点，返回 link→ProxyDBRecord 映射"""
         if not links:
@@ -725,6 +800,20 @@ class ProxyDatabase:
         )
         rows = await cursor.fetchall()
         return {row["link"]: self._row_to_record(row) for row in rows}
+
+    async def get_verified_keys_set(self, keys: list[tuple[str, str, str]]) -> set[tuple[str, str, str]]:
+        """从已验证库中查找给定 (protocol, address, port) 中存在的 key 集合"""
+        if not keys:
+            return set()
+        result = set()
+        for protocol, address, port in keys:
+            cursor = await self._db.execute(
+                "SELECT 1 FROM verified_proxies WHERE protocol = ? AND address = ? AND port = ?",
+                (protocol, address, port),
+            )
+            if await cursor.fetchone():
+                result.add((protocol, address, port))
+        return result
 
     async def get_verified_links_set(self, links: list[str]) -> set[str]:
         """从已验证库中查找给定 link 列表中存在的 link，返回存在的 link 集合"""
@@ -747,6 +836,35 @@ class ProxyDatabase:
         )
         rows = await cursor.fetchall()
         return {row["link"] for row in rows}
+
+    async def get_proxy_keys_set(self, keys: list[tuple[str, str, str]]) -> set[tuple[str, str, str]]:
+        """从订阅节点库中查找给定 (protocol, address, port) 中存在的 key 集合"""
+        if not keys:
+            return set()
+        result = set()
+        for protocol, address, port in keys:
+            cursor = await self._db.execute(
+                "SELECT 1 FROM proxies WHERE protocol = ? AND address = ? AND port = ?",
+                (protocol, address, port),
+            )
+            if await cursor.fetchone():
+                result.add((protocol, address, port))
+        return result
+
+    async def delete_proxies_by_keys(self, keys: list[tuple[str, str, str]]) -> int:
+        """根据 (protocol, address, port) 批量删除订阅节点库中的节点，返回删除数量"""
+        if not keys:
+            return 0
+        deleted = 0
+        for protocol, address, port in keys:
+            cursor = await self._db.execute(
+                "DELETE FROM proxies WHERE protocol = ? AND address = ? AND port = ?",
+                (protocol, address, port),
+            )
+            await self._db.commit()
+            deleted += cursor.rowcount
+        self._invalidate_stats()
+        return deleted
 
     async def delete_proxies_by_links(self, links: list[str]) -> int:
         """根据 link 列表批量删除订阅节点库中的节点，返回删除数量"""

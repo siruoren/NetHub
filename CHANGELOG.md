@@ -2,57 +2,42 @@
 
 All notable changes to this project will be documented in this file.
 
-## [2.1.0] - 2026-07-22
+## [2.1.0] - 2026-07-26
 
-### 订阅解析扩展
+### 实例源精准同步
 
-- **Clash YAML 格式支持** - 新增 `_is_clash_yaml` 检测、`_parse_clash_yaml` 解析和 `_clash_proxy_to_info` 转换，支持 vmess/vless/trojan/ss/hysteria2/socks5/http 7 种代理类型的 Clash YAML 订阅解析
-- **解析错误行跳过** - 订阅源解析跳过 `#` 和 `//` 开头的注释行，解析失败的行在 debug 级别记录日志，不中断整体解析流程
-- **行首特殊字符清理重试** - 解析每行时先尝试原行解析，失败后用 `re.sub(r'^[^a-zA-Z0-9]+', '', line)` 去除 BOM、emoji、控制字符、空格、制表符、标点等行首特殊字符后重试
+- **实例节点身份标识** - `verified_proxies` 表新增 `instance_node_name` 和 `instance_node_address` 列，存储实例 API 返回的节点名称和地址，作为稳定的唯一身份标识
+- **基于身份的精准同步** - `sync_verified_proxies` 替代原 `batch_insert_verified_proxies`，按 `(instance_source_id, instance_node_name, instance_node_address)` 三元组精准匹配：
+  - 身份已存在且 link 相同 → 跳过
+  - 身份已存在但 link 变化 → UPDATE link 及字段，重置延迟为 -1 待重新验证
+  - 身份不存在 → INSERT 新节点
+  - 不在当前已连接列表中的节点 → 保留不清理
+- **UNIQUE 约束重构** - `verified_proxies` 表的唯一约束从 `link` 改为 `(instance_source_id, instance_node_name, instance_node_address)`，允许不同实例身份匹配到相同 link 时独立入库
+- **自动迁移** - 启动时检测旧表约束，自动重建表并迁移数据
+- **匹配结果附带身份** - `fetch_connected_proxies` 返回类型从 `list[ProxyInfo]` 改为 `list[tuple[ProxyInfo, str, str]]`，每个匹配结果附带实例节点的名称和地址
 
-### 节点数限制
+### 节点数限制重构
 
-- **节点数限制功能** - 新增 `max_proxies` 配置项（默认 500），数据库超出此数量时优先删除延迟最大、入库最老的节点（`ORDER BY latency_ms DESC, created_at ASC`）
-- **数据库持久化** - `max_proxies` 保存到 `settings` 表（key-value），应用启动时从数据库加载覆盖配置文件默认值
-- **配置导出/导入包含** - 导出配置中包含 `max_proxies`，导入时恢复到数据库和内存
-- **页面节点数限制按钮** - 订阅源管理标题栏新增「节点数限制」按钮（位于检测目标左侧），点击展开输入框+确定按钮，保存后自动折叠并刷新页面
-- **可用节点数卡片** - 显示格式为 `可用节点数/节点限制数`（如 321/500），15 秒定时刷新同步更新
+- **全局订阅节点限制** - `max_proxies` 仅限制 `proxies` 表（订阅入库节点总数），不再合并计算 `verified_proxies`
+- **全局实例节点限制** - 新增 `max_instance_nodes` 配置项，独立限制 `verified_proxies` 表（所有实例已验证节点总数），超出按延迟最高+入库最久优先删除
+- **移除订阅级节点限制** - 移除每个订阅条的 `max_nodes` 字段及相关代码（`enforce_max_subscription_proxies`、API 参数、前端输入框、表格列）
+- **前端显示** - 订阅节点数卡片显示 `可用数/max_proxies`，实例节点数卡片显示 `已入库数/max_instance_nodes`
 
-### 性能优化（后台）
+### 调度优化
 
-- **SQLite WAL 模式 + PRAGMA 优化** - `journal_mode=WAL`、`synchronous=NORMAL`、`cache_size=-8000`（8MB）、`temp_store=MEMORY`，显著提升并发读写性能
-- **复合索引** - 新增 `idx_proxies_sub_created(subscription_id, created_at)` 和 `idx_proxies_available(latency_ms, fail_count, subscription_id)`，加速分组查询和可用节点筛选
-- **统计信息内存缓存** - `get_stats()` 使用 `_stats_cache` + `_stats_dirty` 脏标记机制，数据不变时直接返回缓存，避免重复 SQL 查询；所有修改数据的方法末尾调用 `_invalidate_stats()`
-- **`get_stats` 合并查询** - 4 次 SQL 查询合并为 2 次（subscriptions 计数 + proxies `GROUP BY protocol` 一次获得可用数/加权平均延迟/协议分布）
-- **独立 HTTP 连接** - `ProxyChecker` 每次检测创建独立 `aiohttp.ClientSession`（`force_close=True`），检测结束后立即销毁，避免连接池残留到已销毁的内核端口
-- **共享 checker** - scheduler 不再每次拉取/验证创建新 `ProxyChecker`，直接使用 `self.checker` 复用并发控制
-- **逐条插入实时刷新** - `batch_insert_proxies` 改为逐条 `execute` + `commit` + `_invalidate_stats`，前端可用节点数实时刷新
-- **socks4 过滤用 SQL 直接删除** - 新增 `delete_proxies_by_subscription_id_and_protocol`，不再全量获取再遍历过滤
-- **N+1 查询优化** - `_fetch_single_subscription` 中用 `get_proxies_by_links`（`IN` 查询）替代逐个 `get_proxy_by_link`
-- **`delete_subscription` 单次 commit** - 删除订阅源及其下所有节点合并为同一事务中的 2 条 DELETE，1 次 commit
-- **合并元信息更新** - 新增 `batch_update_subscription_meta` 和 `batch_update_instance_meta`，单次 commit
-- **`verify_stored_proxies` 分组查询** - 从 `get_all_proxies()` 全表扫描改为 `get_proxies_grouped_by_subscription`（利用复合索引），验证阈值放宽 2 倍避免误删
-- **`get_proxies_grouped_by_subscription` 精简列** - `SELECT *` 12 列改为 `SELECT` 9 列，减少数据传输和对象创建开销
-- **Jinja2 模板缓存** - `cache_size` 从 0 改为 128，模板编译结果只生成一次后续直接复用
+- **移除定时验证任务** - 不再每半小时定时验证所有入库节点，节点验证改为订阅拉取和实例获取后自动执行
+- **仅验证新增节点** - 实例获取后仅检测新增节点的延迟，而非全量验证该实例下所有节点
+- **断开节点保留** - 实例更新时不在当前已连接列表中的节点保留不清理，等待下次验证自然淘汰
 
-### 性能优化（前台）
+### Docker
 
-- **JSON API 局部刷新** - `refreshPage()` 改为并行请求 `/api/stats` + `/api/proxies/grouped` + `/api/subscriptions` 三个 JSON API，局部更新统计数字、协议分布图、订阅源表格和当前 Tab 节点列表
-- **协议分布图动态更新** - 15 秒统计刷新时同步更新 Chart.js 饼图数据，使用 `update('none')` 无动画快速刷新
-- **`subscriptions_json` 精简序列化** - 不再使用 `asdict()` 递归序列化所有字段，改为手动构造仅包含 JS 需要字段的字典
-- **`_proxy_to_dict` 精简** - 去掉不存在的 `status` 字段、前端不使用的 `last_check_time`/`last_success_time`，添加前端需要的 `created_at`
-- **CDN 预连接** - `<link rel="dns-prefetch">` + `<link rel="preconnect">` 到 jsdelivr CDN
-- **Chart.js 异步加载** - `<script async>` 加载不阻塞首屏渲染，饼图初始化改为轮询等待
-- **Bootstrap JS `defer` 加载** - `<script defer>` 不阻塞 HTML 解析，`initTooltips()` 改为 `DOMContentLoaded` 回调
+- **资源限制** - docker-compose 添加内存限制（上限 512M、保底 128M），防止夯死服务器
 
-### Web 界面
+### Bug 修复
 
-- **内联 SVG favicon** - 使用 data URI 内联地球 emoji 作为 favicon，消除 `/favicon.ico` 404 请求
-- **日志重复修复** - uvicorn reload 时 handler 重复添加导致日志输出两次，添加 `root_logger.handlers.clear()` 修复
-
-### API 修复
-
-- **`PUT /api/config/max-proxies`** - 改用 Pydantic `MaxProxiesBody` 模型接收请求体，修复 422 Unprocessable Entity 错误
+- **实例节点误判新增** - 修复模糊匹配导致同一连接节点在不同次运行匹配到不同 link 时误判为"新增"的问题
+- **UNIQUE 冲突崩溃** - 修复 link 变化时 UPDATE 与 `verified_proxies.link` UNIQUE 约束冲突导致 `IntegrityError` 的问题
+- **link 重复丢失节点** - 修复不同实例身份匹配到相同 link 时 `INSERT OR IGNORE` 跳过导致节点丢失的问题
 
 ---
 
@@ -64,14 +49,16 @@ All notable changes to this project will be documented in this file.
 - **纯文本订阅格式** - 对外订阅输出改为纯文本格式（每行一条原始代理 URI）；移除 base64 编码输出
 - **内核转发检测** - 新增 Xray 内核转发检测能力，支持 HTTP/SOCKS 代理转发后检测连通性；TCP/TLS 直接检测作为回退
 - **检测失败直接删除** - 取消 `fail_count` 累积逻辑，检测不通过的节点直接从数据库删除
-- **实例源节点不入库** - 服务实例获取的节点仅统计已连接数量，不再写入代理数据库
+- **实例源节点入库** - 服务实例获取的已连接节点写入已验证库（`verified_proxies`），与订阅节点库分开管理
 - **socks4 协议移除** - 不再支持 socks4/socks4a 协议，拉取订阅时自动移除已有的 socks4 节点
 
 ### 多协议解析扩展
 
 - **socks5/http 代理支持** - 新增 socks5:// 和 http(s):// 格式的解析、检测和 Clash 配置生成
+- **Clash YAML 订阅解析** - 新增 Clash YAML 格式订阅解析，支持 vmess/vless/trojan/ss/hysteria2/socks5/http 7 种代理类型
 - **http/https 仅带 #fragment 时视为节点** - 避免 URL 误判为代理节点
 - **链接规范化** - socks5/http 代理对外输出确保格式为 `protocol://host:port#host-port`，保留认证信息
+- **智能解析容错** - 自动跳过注释行（`#`/`//`），解析失败行去除 BOM、emoji、控制字符等行首特殊字符后重试
 
 ### 检测优化
 
@@ -81,13 +68,13 @@ All notable changes to this project will be documented in this file.
 - **检测重试机制** - `check_retries` 参数（默认 2），单次检测失败后自动重试
 - **ConnectionRefusedError/ResetError** - 不再返回延迟值（视为不可用）
 - **TLS 回退检测** - SSL 对象状态验证，`server_hostname` 使用原始域名
-- **华为连通性检测** - 新增 `connectivitycheck.platform.hicloud.com/generate_204`
 
 ### 调度优化
 
 - **CronTrigger 随机延迟** - 所有 crontab 任务加入 `jitter`（0~600 秒），避免多订阅源同时更新
 - **订阅验证防重入** - `_verifying_subs` 集合跟踪正在验证的订阅 ID，防止并发重复验证
 - **拉取后自动验证** - `_fetch_single_subscription` 完成后自动触发该订阅的已入库节点验证
+- **独立队列并发** - 订阅源（5并发）和实例源（3并发）使用独立信号量并行拉取
 
 ### 时间与日志
 
@@ -95,17 +82,24 @@ All notable changes to this project will be documented in this file.
 - **单文件日志** - 日志写入 `logs/proxy_pool.log` 单文件，不归档、不保留历史日志
 - **内核日志合并** - 内核 stdout/stderr 合并写入 `logs/proxy-core.log`
 
+### 性能优化
+
+- **SQLite WAL + PRAGMA 优化** - WAL 模式、synchronous=NORMAL、8MB 缓存、temp_store=MEMORY
+- **复合索引** - subscription_id + created_at、latency_ms + fail_count + subscription_id 双索引加速查询
+- **统计信息内存缓存** - 数据不变时直接返回缓存，避免重复 SQL 查询
+- **独立 HTTP 连接** - 每次检测创建独立连接（force_close=True），检测结束立即销毁，无连接池残留
+- **批量数据库操作** - 逐条插入实时刷新、合并元信息更新为单次 commit
+- **N+1 查询优化** - IN 批量查询替代逐个 get_proxy_by_link
+- **前端 JSON API 局部刷新** - 并行请求 3 个 JSON API 局部更新页面，替代整页 DOMParser 解析
+- **协议分布图动态更新** - 15 秒统计刷新同步更新 Chart.js 饼图
+- **CDN 预连接 + async/defer** - dns-prefetch、preconnect 提前建立连接；Chart.js async、Bootstrap JS defer 不阻塞首屏
+
 ### Web 界面
 
-- **统计面板重构** - "总节点数"→"总订阅条目数"（显示订阅源数量），"可用数"→"可用节点数"，移除"不可用"统计卡片
+- **统计面板** - 订阅节点数（可用数/全局限制）、实例节点数（已入库/全局限制）、平均延迟、协议分布
 - **分页显示** - 每个订阅源可用节点列表分页，每页 10 条
-- **操作按钮更新** - "验证所有订阅"→"验证所有节点"，新增"清除所有节点"、"导出配置"、"导入配置"按钮
-- **实例源表头** - "总数"→"已连接"，显示已连接节点数量而非数据库条目数
-
-### 配置管理
-
-- **一键导出/导入** - 导出订阅源和实例源配置为 JSON 文件（含时间戳），导入时自动去重
-- **导出文件名时间戳** - 格式 `nethub_config_YYYYMMDD_HHMMSS.json`
+- **实例源管理** - 显示每个实例的已连接数和已入库数，支持手工导入订阅
+- **配置导出/导入** - 一键导出订阅源、实例源和节点限制配置为 JSON 文件（含时间戳），导入时自动去重
 
 ### API 接口
 
@@ -135,6 +129,8 @@ All notable changes to this project will be documented in this file.
 | DELETE | `/api/check-urls/{url_id}` | 删除检测目标 URL |
 | GET | `/api/config/export` | 导出配置（JSON） |
 | POST | `/api/config/import` | 导入配置（JSON） |
+| PUT | `/api/config/max-proxies` | 更新全局订阅节点限制 |
+| PUT | `/api/config/max-instance-nodes` | 更新全局实例节点限制 |
 | GET | `/api/instance-sources` | 服务实例源列表 |
 | POST | `/api/instance-sources` | 添加服务实例源 |
 | PUT | `/api/instance-sources/{source_id}` | 更新服务实例源 |
@@ -186,28 +182,3 @@ All notable changes to this project will be documented in this file.
 - **日志自动清理** - 自动清理 7 天以前的归档日志
 - **双输出日志** - 同时输出到控制台和文件
 - **Docker Compose 部署** - 一键启动，数据持久化，时区配置
-
-### API 接口
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/proxies` | 可用节点列表 |
-| GET | `/api/proxies/all` | 所有节点 |
-| DELETE | `/api/proxies/{id}` | 删除节点 |
-| GET | `/api/subscription/v2ray` | 核心订阅（base64） |
-| GET | `/api/subscription/clash` | Clash 订阅 |
-| POST | `/api/fetch` | 拉取所有订阅 |
-| POST | `/api/fetch/{sub_id}` | 拉取指定订阅 |
-| POST | `/api/verify` | 验证所有节点 |
-| POST | `/api/verify/{sub_id}` | 验证指定订阅节点 |
-| GET | `/api/stats` | 统计信息 |
-| GET | `/api/health` | 健康检查 |
-| GET | `/api/subscriptions` | 订阅源列表 |
-| POST | `/api/subscriptions` | 添加订阅源 |
-| POST | `/api/subscriptions/auto` | 自动添加订阅源（仅 URL 必填） |
-| PUT | `/api/subscriptions/{sub_id}` | 更新订阅源 |
-| DELETE | `/api/subscriptions/{sub_id}` | 删除订阅源 |
-| GET | `/api/check-urls` | 检测目标 URL 列表 |
-| POST | `/api/check-urls` | 添加检测目标 URL |
-| DELETE | `/api/check-urls/{url_id}` | 删除检测目标 URL |
-| GET | `/api/proxies/grouped` | 按订阅来源分组的可用节点 |
