@@ -857,9 +857,26 @@ async function updateMaxInstanceNodes(val) {
     }
 }
 
+// 记录正在检测中的节点 ID
+var checkingProxyIds = new Set();
+
+// 刷新表格后恢复检测中按钮状态
+function restoreCheckingButtons() {
+    if (checkingProxyIds.size === 0) return;
+    checkingProxyIds.forEach(function(pid) {
+        // 订阅节点按钮
+        var subBtn = document.querySelector('button[onclick="checkProxy(' + pid + ', this)"]');
+        if (subBtn) { subBtn.disabled = true; subBtn.textContent = '检测中...'; }
+        // 已验证节点按钮
+        var verBtn = document.querySelector('button[onclick^="checkVerifiedProxy(' + pid + ',"]');
+        if (verBtn) { verBtn.disabled = true; verBtn.textContent = '检测中...'; }
+    });
+}
+
 async function checkProxy(id, btn) {
     btn.disabled = true;
     btn.textContent = '检测中...';
+    checkingProxyIds.add(id);
     try {
         const resp = await fetch('/api/proxies/' + id + '/check', { method: 'POST' });
         const data = await resp.json();
@@ -877,9 +894,11 @@ async function checkProxy(id, btn) {
                 }
             }
         }
+        checkingProxyIds.delete(id);
         btn.textContent = '检测';
         btn.disabled = false;
     } catch (e) {
+        checkingProxyIds.delete(id);
         alert('检测失败: ' + e.message);
         btn.textContent = '检测';
         btn.disabled = false;
@@ -889,6 +908,7 @@ async function checkProxy(id, btn) {
 async function checkVerifiedProxy(id, instId, btn) {
     btn.disabled = true;
     btn.textContent = '检测中...';
+    checkingProxyIds.add(id);
     try {
         const resp = await fetch('/api/verified-proxies/' + id + '/check', { method: 'POST' });
         const data = await resp.json();
@@ -906,9 +926,11 @@ async function checkVerifiedProxy(id, instId, btn) {
                 }
             }
         }
+        checkingProxyIds.delete(id);
         btn.textContent = '检测';
         btn.disabled = false;
     } catch (e) {
+        checkingProxyIds.delete(id);
         alert('检测失败: ' + e.message);
         btn.textContent = '检测';
         btn.disabled = false;
@@ -1166,6 +1188,7 @@ function refreshPage() {
                 applyPagination(pagerKey);
             }
         }
+        restoreCheckingButtons();
     }).catch(function() { window.location.reload(); });
 }
 
@@ -1528,9 +1551,8 @@ async function refreshActiveTabNodes() {
     } catch (e) {
         // 静默忽略刷新失败
     }
+    restoreCheckingButtons();
 }
-
-// 每30秒刷新当前标签页节点数据
 setInterval(refreshActiveTabNodes, 30000);
 
 </script>
