@@ -51,9 +51,7 @@ async def check_proxy_latency(proxy_id: int):
         await db.batch_update_latency([(proxy_id, latency)])
         return {"id": proxy_id, "latency_ms": latency, "status": "ok"}
     else:
-        # 检测失败，删除该节点
-        await db.delete_proxy(proxy_id)
-        return {"id": proxy_id, "latency_ms": None, "status": "failed", "message": "节点不可达，已删除"}
+        return {"id": proxy_id, "latency_ms": None, "status": "failed", "message": "节点不可达"}
 
 
 @router.delete("/proxies/{proxy_id}")
@@ -444,9 +442,7 @@ async def check_verified_proxy_latency(proxy_id: int):
         await db.batch_update_verified_latency([(proxy_id, latency)])
         return {"id": proxy_id, "latency_ms": latency, "status": "ok"}
     else:
-        # 检测失败，删除该节点
-        await db.batch_delete_verified([proxy_id])
-        return {"id": proxy_id, "latency_ms": None, "status": "failed", "message": "节点不可达，已删除"}
+        return {"id": proxy_id, "latency_ms": None, "status": "failed", "message": "节点不可达"}
 
 
 @router.delete("/verified-proxies/{proxy_id}")
