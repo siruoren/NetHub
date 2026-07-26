@@ -501,11 +501,11 @@ class ProxyDatabase:
     async def sync_verified_proxies(
         self,
         items: list[tuple[ProxyInfo, str, str, int]],
-    ) -> tuple[int, int, int]:
+    ) -> tuple[int, int, int, list[str]]:
         """基于实例节点身份精准同步已验证节点
 
         items: [(ProxyInfo, instance_node_name, instance_node_address, instance_source_id), ...]
-        返回: (新增数, 更新数, 删除数)
+        返回: (新增数, 更新数, 删除数, 新增节点的link列表)
 
         逻辑：
         1. 获取该实例下所有已验证节点，按 (instance_node_name, instance_node_address) 建索引
@@ -516,7 +516,7 @@ class ProxyDatabase:
         3. 不在传入列表中的已存在节点 → DELETE（已断开连接）
         """
         if not items:
-            return 0, 0, 0
+            return 0, 0, 0, []
 
         instance_source_id = items[0][3]
         now = datetime.now(timezone(timedelta(hours=8))).isoformat()
@@ -542,6 +542,7 @@ class ProxyDatabase:
 
         added = 0
         updated = 0
+        new_links: list[str] = []
         matched_ids: set[int] = set()
 
         for proxy, inst_name, inst_addr, _source_id in items:
@@ -578,6 +579,7 @@ class ProxyDatabase:
                     await self._db.commit()
                     if cursor.rowcount > 0:
                         added += 1
+                        new_links.append(proxy.link)
                 except Exception:
                     pass
 
@@ -591,7 +593,7 @@ class ProxyDatabase:
 
         if added or updated or deleted:
             self._invalidate_stats()
-        return added, updated, deleted
+        return added, updated, deleted, new_links
 
     async def get_verified_by_instance_id(self, instance_source_id: int) -> list[ProxyDBRecord]:
         """获取指定实例源下的所有已验证节点"""
