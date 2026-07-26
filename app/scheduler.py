@@ -149,9 +149,11 @@ class TaskScheduler:
             verified_skipped = 0
             threshold_skipped = 0  # 超过阈值的节点数
 
-            existing_map = await self.db.get_proxies_by_links(links)
-            # 查询已验证库中存在的 link，这些节点不再重复插入订阅库
-            verified_links = await self.db.get_verified_links_set(links)
+            # 以 (protocol, address, port) 为唯一标识查重
+            proxy_keys = [(p.protocol, p.address, p.port) for p in proxies]
+            existing_map = await self.db.get_proxies_by_keys(proxy_keys)
+            # 查询已验证库中以 (protocol, address, port) 存在的节点，这些节点不再重复插入订阅库
+            verified_keys = await self.db.get_verified_keys_set(proxy_keys)
 
             for proxy in proxies:
                 latency = results.get(proxy.link)
@@ -160,12 +162,14 @@ class TaskScheduler:
                     skipped += 1
                     continue
 
+                key = (proxy.protocol, proxy.address, proxy.port)
+
                 # 已验证库中存在的节点不再重复插入订阅库
-                if proxy.link in verified_links:
+                if key in verified_keys:
                     verified_skipped += 1
                     continue
 
-                existing = existing_map.get(proxy.link)
+                existing = existing_map.get(key)
                 if existing:
                     if latency <= threshold:
                         latency_updates.append((existing.id, latency))
@@ -488,11 +492,11 @@ class TaskScheduler:
             await self.db.batch_update_instance_meta(source_id, connected_count=connected_count)
 
             if connected_count > 0:
-                # 检查这些节点是否在订阅节点库中存在，如果存在则从订阅库删除
-                proxy_links = [p[0].link for p in proxies]
-                existing_in_proxies = await self.db.get_proxy_links_set(proxy_links)
+                # 检查这些节点是否在订阅节点库中存在（以协议+地址+端口去重），如果存在则从订阅库删除
+                proxy_keys = [(p[0].protocol, p[0].address, p[0].port) for p in proxies]
+                existing_in_proxies = await self.db.get_proxy_keys_set(proxy_keys)
                 if existing_in_proxies:
-                    deleted_from_proxies = await self.db.delete_proxies_by_links(list(existing_in_proxies))
+                    deleted_from_proxies = await self.db.delete_proxies_by_keys(list(existing_in_proxies))
                     logger.info("实例源 #%d: 从订阅节点库中移除 %d 个重复节点", source.id, deleted_from_proxies)
 
                 # 基于实例节点身份精准同步：新增/更新/删除

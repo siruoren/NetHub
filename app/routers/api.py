@@ -80,10 +80,10 @@ async def v2ray_subscription():
     config = get_config()
     proxies = await db.get_subscription_output_proxies(config.check.latency_threshold)
     verified = await db.get_all_verified_proxies(config.check.latency_threshold)
-    # 去重：已验证库中与订阅源重复的节点不输出
-    existing_links = {p.link for p in proxies}
+    # 去重：已验证库中与订阅源重复的节点不输出（以协议+地址+端口去重）
+    existing_keys = {(p.protocol, p.address, p.port) for p in proxies}
     for vp in verified:
-        if vp.link not in existing_links:
+        if (vp.protocol, vp.address, vp.port) not in existing_keys:
             proxies.append(vp)
     content = generate_v2ray_subscription(proxies)
     return _subscription_response(content, "text/plain")
@@ -99,10 +99,10 @@ async def plain_subscription():
     config = get_config()
     proxies = await db.get_subscription_output_proxies(config.check.latency_threshold)
     verified = await db.get_all_verified_proxies(config.check.latency_threshold)
-    # 去重：已验证库中与订阅源重复的节点不输出
-    existing_links = {p.link for p in proxies}
+    # 去重：已验证库中与订阅源重复的节点不输出（以协议+地址+端口去重）
+    existing_keys = {(p.protocol, p.address, p.port) for p in proxies}
     for vp in verified:
-        if vp.link not in existing_links:
+        if (vp.protocol, vp.address, vp.port) not in existing_keys:
             proxies.append(vp)
     content = generate_plain_subscription(proxies)
     return _subscription_response(content, "text/plain")
@@ -118,10 +118,10 @@ async def clash_subscription():
     config = get_config()
     proxies = await db.get_subscription_output_proxies(config.check.latency_threshold)
     verified = await db.get_all_verified_proxies(config.check.latency_threshold)
-    # 去重：已验证库中与订阅源重复的节点不输出
-    existing_links = {p.link for p in proxies}
+    # 去重：已验证库中与订阅源重复的节点不输出（以协议+地址+端口去重）
+    existing_keys = {(p.protocol, p.address, p.port) for p in proxies}
     for vp in verified:
-        if vp.link not in existing_links:
+        if (vp.protocol, vp.address, vp.port) not in existing_keys:
             proxies.append(vp)
     content = generate_clash_subscription(proxies)
     return _subscription_response(content, "text/yaml")
