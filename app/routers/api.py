@@ -38,21 +38,6 @@ async def get_all_proxies():
     }
 
 
-@router.post("/proxies/{proxy_id}/check")
-async def check_proxy_latency(proxy_id: int):
-    """检测单个订阅节点的延迟"""
-    db = get_db()
-    checker = get_checker()
-    link = await db.get_proxy_link_by_id(proxy_id)
-    if not link:
-        raise HTTPException(status_code=404, detail="节点不存在")
-    latency = await checker.check_proxy(link)
-    if latency is not None:
-        await db.batch_update_latency([(proxy_id, latency)])
-        return {"id": proxy_id, "latency_ms": latency, "status": "ok"}
-    else:
-        return {"id": proxy_id, "latency_ms": None, "status": "failed", "message": "节点不可达"}
-
 
 @router.delete("/proxies/{proxy_id}")
 async def delete_proxy(proxy_id: int):
@@ -403,13 +388,16 @@ async def delete_subscription(sub_id: int):
 
 @router.get("/proxies/grouped")
 async def get_proxies_grouped():
-    """获取按订阅来源分组的可用节点"""
+    """获取按订阅来源分组的所有可用节点（含延迟-1待检测）"""
     db = get_db()
-    config = get_config()
-    grouped = await db.get_proxies_grouped_by_subscription(config.check.latency_threshold)
+    instance_sources = await db.get_all_instance_sources()
+    subscriptions = await db.get_all_subscriptions()
+    subscriptions = [s for s in subscriptions if "nethub" not in s.url.lower()]
     result = {}
-    for sub_id, proxies in grouped.items():
-        result[str(sub_id)] = [_proxy_to_dict(p) for p in proxies]
+    for sub in subscriptions:
+        proxies = await db.get_proxies_by_subscription_id(sub.id)
+        if proxies:
+            result[str(sub.id)] = [_proxy_to_dict(p) for p in proxies]
     return {"grouped": result}
 
 
@@ -417,32 +405,16 @@ async def get_proxies_grouped():
 
 @router.get("/verified-proxies/grouped")
 async def get_verified_proxies_grouped():
-    """获取按实例源分组的已验证节点（仅延迟达标的）"""
+    """获取按实例源分组的已验证节点（包含所有节点，含延迟-1待检测）"""
     db = get_db()
-    config = get_config()
     instance_sources = await db.get_all_instance_sources()
     result = {}
     for inst in instance_sources:
-        vp = await db.get_verified_available_by_instance_id(inst.id, config.check.latency_threshold)
+        vp = await db.get_verified_by_instance_id(inst.id)
         if vp:
             result[str(inst.id)] = [_proxy_to_dict(p) for p in vp]
     return {"verified_grouped": result}
 
-
-@router.post("/verified-proxies/{proxy_id}/check")
-async def check_verified_proxy_latency(proxy_id: int):
-    """检测单个已验证节点的延迟"""
-    db = get_db()
-    checker = get_checker()
-    link = await db.get_verified_proxy_link_by_id(proxy_id)
-    if not link:
-        raise HTTPException(status_code=404, detail="已验证节点不存在")
-    latency = await checker.check_proxy(link)
-    if latency is not None:
-        await db.batch_update_verified_latency([(proxy_id, latency)])
-        return {"id": proxy_id, "latency_ms": latency, "status": "ok"}
-    else:
-        return {"id": proxy_id, "latency_ms": None, "status": "failed", "message": "节点不可达"}
 
 
 @router.delete("/verified-proxies/{proxy_id}")
