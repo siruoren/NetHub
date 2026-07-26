@@ -9,16 +9,18 @@
 - **内核转发检测** - Xray 内核转发后检测连通性，TCP/TLS 直接检测作为回退；多目标 URL 轮询 + 响应体验证 + 检测重试
 - **检测失败直接删除** - 取消失败计数累积，检测不通过的节点直接从数据库删除
 - **节点-订阅绑定** - 每个节点绑定所属 `subscription_id`，已存在于其他订阅的节点不重复入库
-- **节点数限制** - 配置最大节点数量（默认 500），超出时优先删除延迟最大、入库最老的节点；页面可配置，保存到数据库
+- **双库管理** - 订阅节点库（`proxies`）和实例已验证库（`verified_proxies`）分开管理，对外订阅输出合并去重
+- **实例源精准同步** - 基于实例节点身份 `(instance_node_name, instance_node_address)` 精准匹配，link 变化时 UPDATE 而非重复 INSERT
+- **全局节点限制** - 订阅节点和实例节点分别设置独立的全局上限，超出按延迟最高+入库最久优先删除
 - **纯文本订阅输出** - 每行一条原始代理 URI；同时提供 Clash（YAML）格式
 - **多协议支持** - vmess / vless / trojan / ss / hysteria2 / socks5 / http(s) 解析、检测与 Clash 配置生成
 - **Clash YAML 订阅解析** - 支持解析 Clash 格式的 YAML 订阅源，自动识别并转换为内部节点格式
 - **智能解析容错** - 自动跳过注释行（`#`/`//`），解析失败行去除 BOM、emoji、控制字符等行首特殊字符后重试
-- **服务实例源** - 获取已连接节点数量统计（不入库），支持手工导入实例源中的订阅地址
-- **配置导出/导入** - 一键导出订阅源、实例源和节点数限制配置为 JSON 文件（含时间戳），导入时自动去重
+- **服务实例源** - 登录 v2rayA 实例获取已连接节点，入库已验证库并检测延迟；支持手工导入实例源中的订阅地址
+- **配置导出/导入** - 一键导出订阅源、实例源和节点限制配置为 JSON 文件（含时间戳），导入时自动去重
 - **UTC+8 时区统一** - 所有服务时间统一为东八区
 - **单文件日志** - 不归档、不保留历史日志
-- **Docker 部署** - Docker Compose 一键启动
+- **Docker 部署** - Docker Compose 一键启动，内存资源限制
 
 ## 性能优化
 
@@ -84,8 +86,9 @@ check:
 
 scheduler:
   fetch_interval: 3600           # 拉取订阅间隔（秒）
-  verify_interval: 1800          # 验证节点间隔（秒）
-  max_proxies: 500               # 最大节点数量，超出按延迟+入库时间删除
+  cleanup_interval: 86400        # 清理空订阅间隔（秒）
+  max_proxies: 500               # 全局订阅节点最大数量，超出按延迟+入库时间删除
+  max_instance_nodes: 0          # 全局实例节点最大数量，0=不限制
 ```
 
 > 检测目标 URL 默认包含 Google 204、Gstatic 204、Cloudflare、Apple、华为连通性检测等，首次启动自动写入数据库，后续在页面「检测目标」中管理，修改即时生效。
@@ -153,7 +156,8 @@ scheduler:
 |------|------|------|
 | GET | `/api/config/export` | 导出配置（JSON） |
 | POST | `/api/config/import` | 导入配置（JSON，自动去重） |
-| PUT | `/api/config/max-proxies` | 更新节点数限制 |
+| PUT | `/api/config/max-proxies` | 更新全局订阅节点限制 |
+| PUT | `/api/config/max-instance-nodes` | 更新全局实例节点限制 |
 
 ### 检测目标
 
@@ -167,7 +171,7 @@ scheduler:
 
 | 方法 | 路径 | 说明 |
 |------|------|--------|
-| GET | `/api/stats` | 统计信息（总订阅条目数、可用节点数、平均延迟、协议分布、max_proxies） |
+| GET | `/api/stats` | 统计信息（总订阅条目数、可用节点数、平均延迟、协议分布、节点限制） |
 | GET | `/api/health` | 健康检查 |
 
 ## 订阅链接使用
@@ -177,7 +181,7 @@ scheduler:
 - **纯文本**: `http://your-server:2020/api/subscription/plain`
 - **Clash**: `http://your-server:2020/api/subscription/clash`
 
-> 订阅内容仅包含延迟低于阈值的可用节点，随节点池自动更新。
+> 订阅内容合并订阅节点库和实例已验证库中延迟低于阈值的可用节点，按 link 去重后输出。
 
 ## 支持协议
 
@@ -221,22 +225,22 @@ proxy_pool/
 │   ├── main.py              # 启动入口
 │   ├── config.py            # YAML 配置加载
 │   ├── database.py          # aiosqlite 异步数据库操作（WAL + 缓存 + 批量操作）
-│   ├── models.py            # 数据模型（ProxyInfo / ProxyDBRecord / SubscriptionRecord）
-│   ├── parser.py            # 订阅拉取 & 解析（7 协议 + Clash YAML + 容错重试）
+│   ├── models.py            # 数据模型（ProxyInfo / ProxyDBRecord / SubscriptionRecord / InstanceSourceRecord）
+│   ├── parser.py            # 订阅拉取 & 解析（7 协议 + Clash YAML + 容错重试 + 实例节点匹配）
 │   ├── checker.py           # 内核转发检测 + TCP/TLS 回退检测（独立连接）
 │   ├── generator.py         # 纯文本 / Clash 订阅生成
-│   ├── scheduler.py         # APScheduler 定时任务调度（共享 checker + N+1 优化）
+│   ├── scheduler.py         # APScheduler 定时任务调度（共享 checker + 精准同步）
 │   ├── routers/
 │   │   ├── api.py           # REST API 路由
 │   │   └── web.py           # Web 页面路由（精简序列化）
 │   └── templates/
 │       ├── base.html        # 基础模板（CDN 预连接 + defer + favicon）
-│       ├── index.html       # 主页面（JSON API 局部刷新 + 分页 + 节点数限制）
+│       ├── index.html       # 主页面（JSON API 局部刷新 + 分页 + 双库管理 + 节点限制）
 │       └── subscription.html # 订阅链接页
 ├── logs/                    # 日志目录（单文件，不归档）
 ├── data/                    # 数据库目录
 ├── config.yaml              # 配置文件
-├── docker-compose.yaml      # Docker 编排
+├── docker-compose.yaml      # Docker 编排（内存限制）
 ├── Dockerfile               # Docker 镜像
 ├── CHANGELOG.md             # 变更日志
 └── requirements.txt         # Python 依赖

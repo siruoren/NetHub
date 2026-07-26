@@ -401,6 +401,8 @@
                         </td>
                         <td><small>{{ proxy.created_at[:19] if proxy.created_at else '-' }}</small></td>
                         <td>
+                            <button class="btn btn-outline-success btn-sm py-0 px-1" style="font-size:0.75rem"
+                                    onclick="checkProxy({{ proxy.id }}, this)">检测</button>
                             <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem"
                                     onclick="deleteProxy({{ proxy.id }})">删除</button>
                         </td>
@@ -453,6 +455,8 @@
                         </td>
                         <td><small>{{ proxy.created_at[:19] if proxy.created_at else '-' }}</small></td>
                         <td>
+                            <button class="btn btn-outline-success btn-sm py-0 px-1" style="font-size:0.75rem"
+                                    onclick="checkVerifiedProxy({{ proxy.id }}, {{ inst.id }}, this)">检测</button>
                             <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem"
                                     onclick="deleteVerifiedProxy({{ proxy.id }}, {{ inst.id }})">删除</button>
                         </td>
@@ -853,6 +857,78 @@ async function updateMaxInstanceNodes(val) {
     }
 }
 
+async function checkProxy(id, btn) {
+    btn.disabled = true;
+    btn.textContent = '检测中...';
+    try {
+        const resp = await fetch('/api/proxies/' + id + '/check', { method: 'POST' });
+        const data = await resp.json();
+        if (data.status === 'ok') {
+            // 更新行中的延迟显示
+            var tr = btn.closest('tr');
+            if (tr) {
+                var latencyCell = tr.querySelectorAll('td')[5];
+                if (latencyCell) {
+                    var lat = data.latency_ms;
+                    var cls = lat < 500 ? 'latency-good' : (lat < 1500 ? 'latency-medium' : 'latency-bad');
+                    latencyCell.innerHTML = '<span class="' + cls + '">' + Math.round(lat) + ' ms</span>';
+                    tr.dataset.latency = lat;
+                }
+            }
+            btn.textContent = '检测';
+            btn.disabled = false;
+        } else {
+            // 节点不可达已删除，移除行
+            var tr = btn.closest('tr');
+            if (tr) {
+                var subId = tr.dataset.sub;
+                tr.remove();
+                if (subId) applyPagination(subId);
+            }
+        }
+    } catch (e) {
+        alert('检测失败: ' + e.message);
+        btn.textContent = '检测';
+        btn.disabled = false;
+    }
+}
+
+async function checkVerifiedProxy(id, instId, btn) {
+    btn.disabled = true;
+    btn.textContent = '检测中...';
+    try {
+        const resp = await fetch('/api/verified-proxies/' + id + '/check', { method: 'POST' });
+        const data = await resp.json();
+        if (data.status === 'ok') {
+            // 更新行中的延迟显示
+            var tr = btn.closest('tr');
+            if (tr) {
+                var latencyCell = tr.querySelectorAll('td')[5];
+                if (latencyCell) {
+                    var lat = data.latency_ms;
+                    var cls = lat < 500 ? 'latency-good' : (lat < 1500 ? 'latency-medium' : 'latency-bad');
+                    latencyCell.innerHTML = '<span class="' + cls + '">' + Math.round(lat) + ' ms</span>';
+                    tr.dataset.latency = lat;
+                }
+            }
+            btn.textContent = '检测';
+            btn.disabled = false;
+        } else {
+            // 节点不可达已删除，移除行
+            var tr = btn.closest('tr');
+            if (tr) {
+                var pagerKey = 'inst-' + instId;
+                tr.remove();
+                applyPagination(pagerKey);
+            }
+        }
+    } catch (e) {
+        alert('检测失败: ' + e.message);
+        btn.textContent = '检测';
+        btn.disabled = false;
+    }
+}
+
 async function deleteProxy(id) {
     if (!confirm('确定删除该节点？')) return;
     try {
@@ -1067,7 +1143,7 @@ function refreshPage() {
                         '<td>' + p.port + '</td>' +
                         '<td><span class="' + latencyClass + '">' + Math.round(p.latency_ms) + ' ms</span></td>' +
                         '<td><small>' + timeShort + '</small></td>' +
-                        '<td><button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem" onclick="deleteProxy(' + p.id + ')">删除</button></td>' +
+                        '<td><button class="btn btn-outline-success btn-sm py-0 px-1" style="font-size:0.75rem" onclick="checkProxy(' + p.id + ', this)">检测</button> <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem" onclick="deleteProxy(' + p.id + ')">删除</button></td>' +
                         '</tr>';
                 }).join('');
                 if (!proxies.length) {
@@ -1093,7 +1169,7 @@ function refreshPage() {
                         '<td>' + p.port + '</td>' +
                         '<td><span class="' + latencyClass + '">' + Math.round(p.latency_ms) + ' ms</span></td>' +
                         '<td><small>' + timeShort + '</small></td>' +
-                        '<td><button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem" onclick="deleteVerifiedProxy(' + p.id + ', ' + currentInstId + ')">删除</button></td>' +
+                        '<td><button class="btn btn-outline-success btn-sm py-0 px-1" style="font-size:0.75rem" onclick="checkVerifiedProxy(' + p.id + ', ' + currentInstId + ', this)">检测</button> <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem" onclick="deleteVerifiedProxy(' + p.id + ', ' + currentInstId + ')">删除</button></td>' +
                         '</tr>';
                 }).join('');
                 if (!vProxies.length) {

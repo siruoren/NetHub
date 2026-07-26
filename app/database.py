@@ -359,6 +359,22 @@ class ProxyDatabase:
             await self._db.commit()
             self._invalidate_stats()
 
+    async def get_proxy_link_by_id(self, proxy_id: int) -> str | None:
+        """获取订阅节点库中指定 ID 的 link"""
+        cursor = await self._db.execute(
+            "SELECT link FROM proxies WHERE id = ?", (proxy_id,)
+        )
+        row = await cursor.fetchone()
+        return row["link"] if row else None
+
+    async def get_verified_proxy_link_by_id(self, proxy_id: int) -> str | None:
+        """获取已验证节点库中指定 ID 的 link"""
+        cursor = await self._db.execute(
+            "SELECT link FROM verified_proxies WHERE id = ?", (proxy_id,)
+        )
+        row = await cursor.fetchone()
+        return row["link"] if row else None
+
     async def delete_proxy(self, proxy_id: int) -> None:
         """删除指定节点"""
         await self._db.execute("DELETE FROM proxies WHERE id = ?", (proxy_id,))
