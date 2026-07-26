@@ -1448,5 +1448,90 @@ async function refreshStats() {
         console.error('刷新统计失败:', e);
     }
 }
+
+// 定时刷新当前激活标签页的节点数据（30秒），确保后台检测完成后延迟更新可见
+async function refreshActiveTabNodes() {
+    var activeTab = document.querySelector('#subTab .nav-link.active');
+    if (!activeTab) return;
+    var tabType = activeTab.dataset.tabType;
+    try {
+        if (tabType === 'sub') {
+            var subId = activeTab.dataset.subId;
+            var resp = await fetch('/api/proxies/grouped', {cache:'no-store'});
+            var data = await resp.json();
+            var proxies = data.grouped[String(subId)] || [];
+            var tbody = document.querySelector('#tbl-' + subId + ' tbody');
+            if (tbody) {
+                tbody.innerHTML = proxies.map(function(p, i) {
+                    var latencyClass = p.latency_ms < 500 ? 'latency-good' :
+                                       p.latency_ms < 1500 ? 'latency-medium' : 'latency-bad';
+                    var nameShort = p.name.length > 30 ? p.name.substring(0, 30) + '...' : p.name;
+                    var timeShort = p.created_at ? p.created_at.substring(0, 19) : '-';
+                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-sub="' + subId + '">' +
+                        '<td>' + (i + 1) + '</td>' +
+                        '<td title="' + p.name + '">' + nameShort + '</td>' +
+                        '<td><span class="badge bg-secondary">' + p.protocol + '</span></td>' +
+                        '<td><code>' + p.address + '</code></td>' +
+                        '<td>' + p.port + '</td>' +
+                        '<td><span class="' + latencyClass + '">' + Math.round(p.latency_ms) + ' ms</span></td>' +
+                        '<td><small>' + timeShort + '</small></td>' +
+                        '<td><button class="btn btn-outline-success btn-sm py-0 px-1" style="font-size:0.75rem" onclick="checkProxy(' + p.id + ', this)">检测</button> <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem" onclick="deleteProxy(' + p.id + ')">删除</button></td>' +
+                        '</tr>';
+                }).join('');
+                if (!proxies.length) {
+                    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">暂无可用节点</td></tr>';
+                }
+                // 更新 Tab 标签上的可用数
+                var tabBtn = document.querySelector('#tab-' + subId);
+                if (tabBtn) {
+                    var badge = tabBtn.querySelector('.badge');
+                    if (badge) badge.textContent = proxies.length;
+                }
+                applyPagination(subId);
+            }
+        } else if (tabType === 'inst') {
+            var instId = activeTab.dataset.instId;
+            var resp = await fetch('/api/verified-proxies/grouped', {cache:'no-store'});
+            var data = await resp.json();
+            var vProxies = data.verified_grouped[String(instId)] || [];
+            var vtbody = document.querySelector('#tbl-inst-' + instId + ' tbody');
+            if (vtbody) {
+                vtbody.innerHTML = vProxies.map(function(p, i) {
+                    var latencyClass = p.latency_ms < 500 ? 'latency-good' :
+                                       p.latency_ms < 1500 ? 'latency-medium' : 'latency-bad';
+                    var nameShort = p.name.length > 30 ? p.name.substring(0, 30) + '...' : p.name;
+                    var timeShort = p.created_at ? p.created_at.substring(0, 19) : '-';
+                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-inst="' + instId + '">' +
+                        '<td>' + (i + 1) + '</td>' +
+                        '<td title="' + p.name + '">' + nameShort + '</td>' +
+                        '<td><span class="badge bg-secondary">' + p.protocol + '</span></td>' +
+                        '<td><code>' + p.address + '</code></td>' +
+                        '<td>' + p.port + '</td>' +
+                        '<td><span class="' + latencyClass + '">' + Math.round(p.latency_ms) + ' ms</span></td>' +
+                        '<td><small>' + timeShort + '</small></td>' +
+                        '<td><button class="btn btn-outline-success btn-sm py-0 px-1" style="font-size:0.75rem" onclick="checkVerifiedProxy(' + p.id + ', ' + instId + ', this)">检测</button> <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:0.75rem" onclick="deleteVerifiedProxy(' + p.id + ', ' + instId + ')">删除</button></td>' +
+                        '</tr>';
+                }).join('');
+                if (!vProxies.length) {
+                    vtbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">暂无已验证节点</td></tr>';
+                }
+                var tabBtn = document.querySelector('#tab-inst-' + instId);
+                if (tabBtn) {
+                    var badge = tabBtn.querySelector('.badge');
+                    if (badge) badge.textContent = vProxies.length;
+                }
+                var pagerKey = 'inst-' + instId;
+                pageState[pagerKey] = pageState[pagerKey] || 1;
+                applyPagination(pagerKey);
+            }
+        }
+    } catch (e) {
+        // 静默忽略刷新失败
+    }
+}
+
+// 每30秒刷新当前标签页节点数据
+setInterval(refreshActiveTabNodes, 30000);
+
 </script>
 {% endblock %}

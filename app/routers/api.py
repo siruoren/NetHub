@@ -46,11 +46,14 @@ async def check_proxy_latency(proxy_id: int):
     link = await db.get_proxy_link_by_id(proxy_id)
     if not link:
         raise HTTPException(status_code=404, detail="节点不存在")
+    logger.info("手动检测订阅节点 #%d: %s", proxy_id, link[:50])
     latency = await checker.check_proxy(link)
     if latency is not None:
         await db.batch_update_latency([(proxy_id, latency)])
+        logger.info("订阅节点 #%d 检测成功: %.1fms", proxy_id, latency)
         return {"id": proxy_id, "latency_ms": latency, "status": "ok"}
     else:
+        logger.info("订阅节点 #%d 检测失败: 不可达", proxy_id)
         return {"id": proxy_id, "latency_ms": None, "status": "failed", "message": "节点不可达"}
 
 
@@ -437,11 +440,14 @@ async def check_verified_proxy_latency(proxy_id: int):
     link = await db.get_verified_proxy_link_by_id(proxy_id)
     if not link:
         raise HTTPException(status_code=404, detail="已验证节点不存在")
+    logger.info("手动检测已验证节点 #%d: %s", proxy_id, link[:50])
     latency = await checker.check_proxy(link)
     if latency is not None:
         await db.batch_update_verified_latency([(proxy_id, latency)])
+        logger.info("已验证节点 #%d 检测成功: %.1fms", proxy_id, latency)
         return {"id": proxy_id, "latency_ms": latency, "status": "ok"}
     else:
+        logger.info("已验证节点 #%d 检测失败: 不可达", proxy_id)
         return {"id": proxy_id, "latency_ms": None, "status": "failed", "message": "节点不可达"}
 
 
