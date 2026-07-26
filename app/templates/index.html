@@ -863,29 +863,22 @@ async function checkProxy(id, btn) {
     try {
         const resp = await fetch('/api/proxies/' + id + '/check', { method: 'POST' });
         const data = await resp.json();
-        if (data.status === 'ok') {
-            // 更新行中的延迟显示
-            var tr = btn.closest('tr');
-            if (tr) {
-                var latencyCell = tr.querySelectorAll('td')[5];
-                if (latencyCell) {
+        var tr = btn.closest('tr');
+        if (tr) {
+            var latencyCell = tr.querySelectorAll('td')[5];
+            if (latencyCell) {
+                if (data.status === 'ok') {
                     var lat = data.latency_ms;
                     var cls = lat < 500 ? 'latency-good' : (lat < 1500 ? 'latency-medium' : 'latency-bad');
                     latencyCell.innerHTML = '<span class="' + cls + '">' + Math.round(lat) + ' ms</span>';
                     tr.dataset.latency = lat;
+                } else {
+                    latencyCell.innerHTML = '<span class="latency-bad">不可达</span>';
                 }
             }
-            btn.textContent = '检测';
-            btn.disabled = false;
-        } else {
-            // 节点不可达已删除，移除行
-            var tr = btn.closest('tr');
-            if (tr) {
-                var subId = tr.dataset.sub;
-                tr.remove();
-                if (subId) applyPagination(subId);
-            }
         }
+        btn.textContent = '检测';
+        btn.disabled = false;
     } catch (e) {
         alert('检测失败: ' + e.message);
         btn.textContent = '检测';
@@ -899,29 +892,22 @@ async function checkVerifiedProxy(id, instId, btn) {
     try {
         const resp = await fetch('/api/verified-proxies/' + id + '/check', { method: 'POST' });
         const data = await resp.json();
-        if (data.status === 'ok') {
-            // 更新行中的延迟显示
-            var tr = btn.closest('tr');
-            if (tr) {
-                var latencyCell = tr.querySelectorAll('td')[5];
-                if (latencyCell) {
+        var tr = btn.closest('tr');
+        if (tr) {
+            var latencyCell = tr.querySelectorAll('td')[5];
+            if (latencyCell) {
+                if (data.status === 'ok') {
                     var lat = data.latency_ms;
                     var cls = lat < 500 ? 'latency-good' : (lat < 1500 ? 'latency-medium' : 'latency-bad');
                     latencyCell.innerHTML = '<span class="' + cls + '">' + Math.round(lat) + ' ms</span>';
                     tr.dataset.latency = lat;
+                } else {
+                    latencyCell.innerHTML = '<span class="latency-bad">不可达</span>';
                 }
             }
-            btn.textContent = '检测';
-            btn.disabled = false;
-        } else {
-            // 节点不可达已删除，移除行
-            var tr = btn.closest('tr');
-            if (tr) {
-                var pagerKey = 'inst-' + instId;
-                tr.remove();
-                applyPagination(pagerKey);
-            }
         }
+        btn.textContent = '检测';
+        btn.disabled = false;
     } catch (e) {
         alert('检测失败: ' + e.message);
         btn.textContent = '检测';
