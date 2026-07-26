@@ -38,24 +38,6 @@ async def get_all_proxies():
     }
 
 
-@router.post("/proxies/{proxy_id}/check")
-async def check_proxy_latency(proxy_id: int):
-    """检测单个订阅节点的延迟"""
-    db = get_db()
-    checker = get_checker()
-    link = await db.get_proxy_link_by_id(proxy_id)
-    if not link:
-        raise HTTPException(status_code=404, detail="节点不存在")
-    logger.info("手动检测订阅节点 #%d: %s", proxy_id, link[:50])
-    latency = await checker.check_proxy(link)
-    if latency is not None:
-        await db.batch_update_latency([(proxy_id, latency)])
-        logger.info("订阅节点 #%d 检测成功: %.1fms", proxy_id, latency)
-        return {"id": proxy_id, "latency_ms": latency, "status": "ok"}
-    else:
-        logger.info("订阅节点 #%d 检测失败: 不可达", proxy_id)
-        return {"id": proxy_id, "latency_ms": None, "status": "failed", "message": "节点不可达"}
-
 
 @router.delete("/proxies/{proxy_id}")
 async def delete_proxy(proxy_id: int):
@@ -433,24 +415,6 @@ async def get_verified_proxies_grouped():
             result[str(inst.id)] = [_proxy_to_dict(p) for p in vp]
     return {"verified_grouped": result}
 
-
-@router.post("/verified-proxies/{proxy_id}/check")
-async def check_verified_proxy_latency(proxy_id: int):
-    """检测单个已验证节点的延迟"""
-    db = get_db()
-    checker = get_checker()
-    link = await db.get_verified_proxy_link_by_id(proxy_id)
-    if not link:
-        raise HTTPException(status_code=404, detail="已验证节点不存在")
-    logger.info("手动检测已验证节点 #%d: %s", proxy_id, link[:50])
-    latency = await checker.check_proxy(link)
-    if latency is not None:
-        await db.batch_update_verified_latency([(proxy_id, latency)])
-        logger.info("已验证节点 #%d 检测成功: %.1fms", proxy_id, latency)
-        return {"id": proxy_id, "latency_ms": latency, "status": "ok"}
-    else:
-        logger.info("已验证节点 #%d 检测失败: 不可达", proxy_id)
-        return {"id": proxy_id, "latency_ms": None, "status": "failed", "message": "节点不可达"}
 
 
 @router.delete("/verified-proxies/{proxy_id}")
