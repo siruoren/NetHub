@@ -12,7 +12,6 @@ services:
     environment:
       - TZ=Asia/Shanghai
     restart: unless-stopped
-    container_name: v2raya
     cpu_shares: 2048
     deploy:
       resources:
