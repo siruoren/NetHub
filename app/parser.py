@@ -53,7 +53,7 @@ def parse_subscription(content: str) -> list[ProxyInfo]:
         clash_proxies = _parse_clash_yaml(stripped)
         if clash_proxies:
             logger.info("检测到 Clash YAML 格式，解析到 %d 个节点", len(clash_proxies))
-            return clash_proxies
+            return _filter_invalid_proxies(clash_proxies)
 
     share_links: list[ProxyInfo] = []
     lines = stripped.split("\n")
@@ -96,7 +96,31 @@ def parse_subscription(content: str) -> list[ProxyInfo]:
         else:
             logger.debug("忽略无法解析的行: %s", line[:80])
 
-    return share_links
+    return _filter_invalid_proxies(share_links)
+
+
+def _filter_invalid_proxies(proxies: list[ProxyInfo]) -> list[ProxyInfo]:
+    """过滤无效协议节点：vmess 地址为空、vless 含 raw/xhttp 传输"""
+    _VLESS_SKIP_TYPES = ("type=raw", "type=xhttp")
+    filtered = []
+    for p in proxies:
+        # vmess 地址为空（如 vmess() 等无效配置）
+        if p.protocol == "vmess" and not p.address:
+            logger.debug("过滤无效 vmess 节点（地址为空）: %s", p.name[:50] if p.name else "")
+            continue
+        # vless 协议包含 raw/xhttp 传输（涵盖 raw、raw+reality、xhttp、xhttp+tls、xhttp+reality）
+        if p.protocol == "vless" and any(t in p.link for t in _VLESS_SKIP_TYPES):
+            logger.debug("过滤 vless raw/xhttp 节点: %s", p.name[:50] if p.name else "")
+            continue
+        filtered.append(p)
+    removed = len(proxies) - len(filtered)
+    if removed > 0:
+        vless_skipped = sum(1 for p in proxies if p.protocol == "vless" and any(t in p.link for t in _VLESS_SKIP_TYPES))
+        logger.info("过滤无效协议节点 %d 个（vmess 空 %d, vless raw/xhttp %d）",
+                    removed,
+                    sum(1 for p in proxies if p.protocol == "vmess" and not p.address),
+                    vless_skipped)
+    return filtered
 
 
 def _try_parse_line(line: str) -> ProxyInfo | None:
