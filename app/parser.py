@@ -53,7 +53,7 @@ def parse_subscription(content: str) -> list[ProxyInfo]:
         clash_proxies = _parse_clash_yaml(stripped)
         if clash_proxies:
             logger.info("检测到 Clash YAML 格式，解析到 %d 个节点", len(clash_proxies))
-            return _filter_invalid_proxies(clash_proxies)
+            return filter_invalid_proxies(clash_proxies)
 
     share_links: list[ProxyInfo] = []
     lines = stripped.split("\n")
@@ -96,10 +96,10 @@ def parse_subscription(content: str) -> list[ProxyInfo]:
         else:
             logger.debug("忽略无法解析的行: %s", line[:80])
 
-    return _filter_invalid_proxies(share_links)
+    return filter_invalid_proxies(share_links)
 
 
-def _filter_invalid_proxies(proxies: list[ProxyInfo]) -> list[ProxyInfo]:
+def filter_invalid_proxies(proxies: list[ProxyInfo]) -> list[ProxyInfo]:
     """过滤无效协议节点：vmess 地址为空、vless 含 raw/xhttp 传输"""
     _VLESS_SKIP_TYPES = ("type=raw", "type=xhttp")
     filtered = []
