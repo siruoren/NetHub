@@ -12,6 +12,7 @@ services:
     environment:
       - TZ=Asia/Shanghai
     restart: unless-stopped
+    cpu_shares: 2048
     deploy:
       resources:
         limits:

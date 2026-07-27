@@ -13,7 +13,7 @@ check:
   check_mode: "auto"  # 检测模式: "auto"(优先内核转发回退TCP) / "http"(仅内核转发) / "tcp"(仅TCP/TLS)
   socks_port: 1080    # 本地转发端口（ConnectivityMonitor使用）
   http_port: 1081     # 本地HTTP转发端口
-  kernel_path: "v2ray" # 内核可执行文件路径
+  kernel_path: "xray" # 内核可执行文件路径
   check_retries: 2    # 单次检测失败后重试次数
 
 scheduler:

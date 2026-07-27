@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from app import get_checker, get_config, get_db, get_scheduler
 from app.generator import generate_clash_subscription, generate_plain_subscription, generate_v2ray_subscription
+from app.parser import filter_invalid_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,7 @@ async def v2ray_subscription():
     for vp in verified:
         if (vp.protocol, vp.address, vp.port) not in existing_keys:
             proxies.append(vp)
+    proxies = filter_invalid_proxies(proxies)
     content = generate_v2ray_subscription(proxies)
     return _subscription_response(content, "text/plain")
 
@@ -89,6 +91,7 @@ async def plain_subscription():
     for vp in verified:
         if (vp.protocol, vp.address, vp.port) not in existing_keys:
             proxies.append(vp)
+    proxies = filter_invalid_proxies(proxies)
     content = generate_plain_subscription(proxies)
     return _subscription_response(content, "text/plain")
 
@@ -108,6 +111,7 @@ async def clash_subscription():
     for vp in verified:
         if (vp.protocol, vp.address, vp.port) not in existing_keys:
             proxies.append(vp)
+    proxies = filter_invalid_proxies(proxies)
     content = generate_clash_subscription(proxies)
     return _subscription_response(content, "text/yaml")
 
