@@ -48,6 +48,18 @@ async def delete_proxy(proxy_id: int):
     return {"message": "deleted"}
 
 
+class BatchDeleteBody(BaseModel):
+    ids: list[int]
+
+
+@router.post("/proxies/batch-delete")
+async def batch_delete_proxies(body: BatchDeleteBody):
+    """批量删除订阅节点"""
+    db = get_db()
+    await db.batch_delete_proxies(body.ids)
+    return {"deleted": len(body.ids)}
+
+
 @router.delete("/proxies")
 async def delete_all_proxies():
     """一键清除数据库内所有节点"""
@@ -427,6 +439,14 @@ async def delete_verified_proxy(proxy_id: int):
     db = get_db()
     await db.batch_delete_verified([proxy_id])
     return {"message": "deleted"}
+
+
+@router.post("/verified-proxies/batch-delete")
+async def batch_delete_verified_proxies(body: BatchDeleteBody):
+    """批量删除已验证节点"""
+    db = get_db()
+    await db.batch_delete_verified(body.ids)
+    return {"deleted": len(body.ids)}
 
 
 def _proxy_to_dict(proxy) -> dict:

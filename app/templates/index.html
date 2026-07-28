@@ -371,12 +371,15 @@
             <button class="btn btn-outline-primary btn-sm" onclick="triggerVerifySub({{ sub.id }})">
                 <i class="bi bi-arrow-repeat"></i> 验证此订阅节点
             </button>
+            <button class="btn btn-outline-danger btn-sm" id="batch-del-sub-{{ sub.id }}" onclick="batchDeleteSub({{ sub.id }})" disabled>
+                <i class="bi bi-trash"></i> 批量删除
+            </button>
         </div>
         <div class="table-responsive">
             <table class="table table-hover table-sm mb-0" id="tbl-{{ sub.id }}">
                 <thead class="table-light">
                     <tr>
-                        <th width="30">#</th>
+                        <th width="30"><input type="checkbox" class="form-check-input" onclick="toggleAllSub(this, {{ sub.id }})"></th>
                         <th>名称</th>
                         <th class="sortable" data-sort="protocol" onclick="sortTable('tbl-{{ sub.id }}','protocol',this)">协议 <i class="bi bi-arrow-down-up"></i></th>
                         <th class="sortable" data-sort="address" onclick="sortTable('tbl-{{ sub.id }}','address',this)">地址 <i class="bi bi-arrow-down-up"></i></th>
@@ -388,8 +391,8 @@
                 </thead>
                 <tbody>
                     {% for proxy in grouped.get(sub.id, []) %}
-                    <tr data-latency="{{ proxy.latency_ms }}" data-time="{{ proxy.created_at }}" data-sub="{{ sub.id }}" data-protocol="{{ proxy.protocol }}" data-address="{{ proxy.address }}">
-                        <td>{{ loop.index }}</td>
+                    <tr data-latency="{{ proxy.latency_ms }}" data-time="{{ proxy.created_at }}" data-sub="{{ sub.id }}" data-protocol="{{ proxy.protocol }}" data-address="{{ proxy.address }}" data-id="{{ proxy.id }}">
+                        <td><input type="checkbox" class="form-check-input sub-check-{{ sub.id }}" value="{{ proxy.id }}" onchange="updateBatchDelSub({{ sub.id }})"></td>
                         <td title="{{ proxy.name }}">{{ proxy.name[:30] }}{% if proxy.name|length > 30 %}...{% endif %}</td>
                         <td><span class="badge bg-secondary">{% set _t = get_transport_type(proxy.link, proxy.protocol) %}{{ proxy.protocol }}{% if _t %}({{ _t }}){% endif %}</span></td>
                         <td><code>{{ proxy.address }}</code></td>
@@ -423,12 +426,15 @@
             <button class="btn btn-outline-success btn-sm" onclick="fetchInstanceSource({{ inst.id }})">
                 <i class="bi bi-cloud-download"></i> 获取此实例
             </button>
+            <button class="btn btn-outline-danger btn-sm" id="batch-del-inst-{{ inst.id }}" onclick="batchDeleteInst({{ inst.id }})" disabled>
+                <i class="bi bi-trash"></i> 批量删除
+            </button>
         </div>
         <div class="table-responsive">
             <table class="table table-hover table-sm mb-0" id="tbl-inst-{{ inst.id }}">
                 <thead class="table-light">
                     <tr>
-                        <th width="30">#</th>
+                        <th width="30"><input type="checkbox" class="form-check-input" onclick="toggleAllInst(this, {{ inst.id }})"></th>
                         <th>名称</th>
                         <th class="sortable" data-sort="protocol" onclick="sortTable('tbl-inst-{{ inst.id }}','protocol',this)">协议 <i class="bi bi-arrow-down-up"></i></th>
                         <th class="sortable" data-sort="address" onclick="sortTable('tbl-inst-{{ inst.id }}','address',this)">地址 <i class="bi bi-arrow-down-up"></i></th>
@@ -440,8 +446,8 @@
                 </thead>
                 <tbody>
                     {% for proxy in verified_grouped.get(inst.id, []) %}
-                    <tr data-latency="{{ proxy.latency_ms }}" data-time="{{ proxy.created_at }}" data-inst="{{ inst.id }}" data-protocol="{{ proxy.protocol }}" data-address="{{ proxy.address }}">
-                        <td>{{ loop.index }}</td>
+                    <tr data-latency="{{ proxy.latency_ms }}" data-time="{{ proxy.created_at }}" data-inst="{{ inst.id }}" data-protocol="{{ proxy.protocol }}" data-address="{{ proxy.address }}" data-id="{{ proxy.id }}">
+                        <td><input type="checkbox" class="form-check-input inst-check-{{ inst.id }}" value="{{ proxy.id }}" onchange="updateBatchDelInst({{ inst.id }})"></td>
                         <td title="{{ proxy.name }}">{{ proxy.name[:30] }}{% if proxy.name|length > 30 %}...{% endif %}</td>
                         <td><span class="badge bg-secondary">{% set _t = get_transport_type(proxy.link, proxy.protocol) %}{{ proxy.protocol }}{% if _t %}({{ _t }}){% endif %}</span></td>
                         <td><code>{{ proxy.address }}</code></td>
@@ -886,6 +892,67 @@ async function deleteVerifiedProxy(id, instId) {
     } catch (e) { alert('删除失败: ' + e.message); }
 }
 
+// ---- 批量删除 ----
+function toggleAllSub(el, subId) {
+    var checks = document.querySelectorAll('.sub-check-' + subId);
+    checks.forEach(function(c) { c.checked = el.checked; });
+    updateBatchDelSub(subId);
+}
+
+function updateBatchDelSub(subId) {
+    var checks = document.querySelectorAll('.sub-check-' + subId + ':checked');
+    var btn = document.getElementById('batch-del-sub-' + subId);
+    if (btn) { btn.disabled = checks.length === 0; }
+}
+
+async function batchDeleteSub(subId) {
+    var checks = document.querySelectorAll('.sub-check-' + subId + ':checked');
+    if (checks.length === 0) return;
+    if (!confirm('确定批量删除选中的 ' + checks.length + ' 个节点？')) return;
+    var ids = Array.from(checks).map(function(c) { return parseInt(c.value); });
+    try {
+        const resp = await fetch('/api/proxies/batch-delete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ids: ids}),
+        });
+        if (resp.ok) {
+            var data = await resp.json();
+            refreshPage();
+        }
+    } catch (e) { alert('批量删除失败: ' + e.message); }
+}
+
+function toggleAllInst(el, instId) {
+    var checks = document.querySelectorAll('.inst-check-' + instId);
+    checks.forEach(function(c) { c.checked = el.checked; });
+    updateBatchDelInst(instId);
+}
+
+function updateBatchDelInst(instId) {
+    var checks = document.querySelectorAll('.inst-check-' + instId + ':checked');
+    var btn = document.getElementById('batch-del-inst-' + instId);
+    if (btn) { btn.disabled = checks.length === 0; }
+}
+
+async function batchDeleteInst(instId) {
+    var checks = document.querySelectorAll('.inst-check-' + instId + ':checked');
+    if (checks.length === 0) return;
+    if (!confirm('确定批量删除选中的 ' + checks.length + ' 个已验证节点？')) return;
+    var ids = Array.from(checks).map(function(c) { return parseInt(c.value); });
+    try {
+        const resp = await fetch('/api/verified-proxies/batch-delete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ids: ids}),
+        });
+        if (resp.ok) {
+            var data = await resp.json();
+            refreshPage();
+        }
+    } catch (e) { alert('批量删除失败: ' + e.message); }
+}
+
 async function deleteAllProxies() {
     if (!confirm('确定清除数据库内所有已保存节点？此操作不可恢复！')) return;
     try {
@@ -1059,8 +1126,8 @@ function refreshPage() {
                                        p.latency_ms < 1500 ? 'latency-medium' : 'latency-bad';
                     var nameShort = p.name.length > 30 ? p.name.substring(0, 30) + '...' : p.name;
                     var timeShort = p.created_at ? p.created_at.substring(0, 19) : '-';
-                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-sub="' + currentSubId + '" data-protocol="' + p.protocol + '" data-address="' + p.address + '">' +
-                        '<td>' + (i + 1) + '</td>' +
+                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-sub="' + currentSubId + '" data-protocol="' + p.protocol + '" data-address="' + p.address + '" data-id="' + p.id + '">' +
+                        '<td><input type="checkbox" class="form-check-input sub-check-' + currentSubId + '" value="' + p.id + '" onchange="updateBatchDelSub(' + currentSubId + ')"></td>' +
                         '<td title="' + p.name + '">' + nameShort + '</td>' +
                         '<td><span class="badge bg-secondary">' + p.display_protocol + '</span></td>' +
                         '<td><code>' + p.address + '</code></td>' +
@@ -1085,8 +1152,8 @@ function refreshPage() {
                                        p.latency_ms < 1500 ? 'latency-medium' : 'latency-bad';
                     var nameShort = p.name.length > 30 ? p.name.substring(0, 30) + '...' : p.name;
                     var timeShort = p.created_at ? p.created_at.substring(0, 19) : '-';
-                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-inst="' + currentInstId + '" data-protocol="' + p.protocol + '" data-address="' + p.address + '">' +
-                        '<td>' + (i + 1) + '</td>' +
+                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-inst="' + currentInstId + '" data-protocol="' + p.protocol + '" data-address="' + p.address + '" data-id="' + p.id + '">' +
+                        '<td><input type="checkbox" class="form-check-input inst-check-' + currentInstId + '" value="' + p.id + '" onchange="updateBatchDelInst(' + currentInstId + ')"></td>' +
                         '<td title="' + p.name + '">' + nameShort + '</td>' +
                         '<td><span class="badge bg-secondary">' + p.display_protocol + '</span></td>' +
                         '<td><code>' + p.address + '</code></td>' +
@@ -1416,8 +1483,8 @@ async function refreshActiveTabNodes() {
                                        p.latency_ms < 1500 ? 'latency-medium' : 'latency-bad';
                     var nameShort = p.name.length > 30 ? p.name.substring(0, 30) + '...' : p.name;
                     var timeShort = p.created_at ? p.created_at.substring(0, 19) : '-';
-                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-sub="' + subId + '" data-protocol="' + p.protocol + '" data-address="' + p.address + '">' +
-                        '<td>' + (i + 1) + '</td>' +
+                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-sub="' + subId + '" data-protocol="' + p.protocol + '" data-address="' + p.address + '" data-id="' + p.id + '">' +
+                        '<td><input type="checkbox" class="form-check-input sub-check-' + subId + '" value="' + p.id + '" onchange="updateBatchDelSub(' + subId + ')"></td>' +
                         '<td title="' + p.name + '">' + nameShort + '</td>' +
                         '<td><span class="badge bg-secondary">' + p.display_protocol + '</span></td>' +
                         '<td><code>' + p.address + '</code></td>' +
@@ -1450,8 +1517,8 @@ async function refreshActiveTabNodes() {
                                        p.latency_ms < 1500 ? 'latency-medium' : 'latency-bad';
                     var nameShort = p.name.length > 30 ? p.name.substring(0, 30) + '...' : p.name;
                     var timeShort = p.created_at ? p.created_at.substring(0, 19) : '-';
-                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-inst="' + instId + '" data-protocol="' + p.protocol + '" data-address="' + p.address + '">' +
-                        '<td>' + (i + 1) + '</td>' +
+                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-inst="' + instId + '" data-protocol="' + p.protocol + '" data-address="' + p.address + '" data-id="' + p.id + '">' +
+                        '<td><input type="checkbox" class="form-check-input inst-check-' + instId + '" value="' + p.id + '" onchange="updateBatchDelInst(' + instId + ')"></td>' +
                         '<td title="' + p.name + '">' + nameShort + '</td>' +
                         '<td><span class="badge bg-secondary">' + p.display_protocol + '</span></td>' +
                         '<td><code>' + p.address + '</code></td>' +
