@@ -371,15 +371,18 @@
             <button class="btn btn-outline-primary btn-sm" onclick="triggerVerifySub({{ sub.id }})">
                 <i class="bi bi-arrow-repeat"></i> 验证此订阅节点
             </button>
+            <button class="btn btn-outline-danger btn-sm" id="batch-del-sub-{{ sub.id }}" onclick="batchDeleteSub({{ sub.id }})" disabled>
+                <i class="bi bi-trash"></i> 批量删除
+            </button>
         </div>
         <div class="table-responsive">
             <table class="table table-hover table-sm mb-0" id="tbl-{{ sub.id }}">
                 <thead class="table-light">
                     <tr>
-                        <th width="30">#</th>
+                        <th width="30"><input type="checkbox" class="form-check-input" onclick="toggleAllSub(this, {{ sub.id }})"></th>
                         <th>名称</th>
-                        <th>协议</th>
-                        <th>地址</th>
+                        <th class="sortable" data-sort="protocol" onclick="sortTable('tbl-{{ sub.id }}','protocol',this)">协议 <i class="bi bi-arrow-down-up"></i></th>
+                        <th class="sortable" data-sort="address" onclick="sortTable('tbl-{{ sub.id }}','address',this)">地址 <i class="bi bi-arrow-down-up"></i></th>
                         <th>端口</th>
                         <th class="sortable" data-sort="latency" onclick="sortTable('tbl-{{ sub.id }}','latency',this)">延迟 <i class="bi bi-arrow-down-up"></i></th>
                         <th class="sortable" data-sort="time" onclick="sortTable('tbl-{{ sub.id }}','time',this)">入库时间 <i class="bi bi-arrow-down-up"></i></th>
@@ -388,10 +391,10 @@
                 </thead>
                 <tbody>
                     {% for proxy in grouped.get(sub.id, []) %}
-                    <tr data-latency="{{ proxy.latency_ms }}" data-time="{{ proxy.created_at }}" data-sub="{{ sub.id }}">
-                        <td>{{ loop.index }}</td>
+                    <tr data-latency="{{ proxy.latency_ms }}" data-time="{{ proxy.created_at }}" data-sub="{{ sub.id }}" data-protocol="{{ proxy.protocol }}" data-address="{{ proxy.address }}" data-id="{{ proxy.id }}">
+                        <td><input type="checkbox" class="form-check-input sub-check-{{ sub.id }}" value="{{ proxy.id }}" onchange="updateBatchDelSub({{ sub.id }})"></td>
                         <td title="{{ proxy.name }}">{{ proxy.name[:30] }}{% if proxy.name|length > 30 %}...{% endif %}</td>
-                        <td><span class="badge bg-secondary">{{ proxy.protocol }}</span></td>
+                        <td><span class="badge bg-secondary">{% set _t = get_transport_type(proxy.link, proxy.protocol) %}{{ proxy.protocol }}{% if _t %}({{ _t }}){% endif %}</span></td>
                         <td><code>{{ proxy.address }}</code></td>
                         <td>{{ proxy.port }}</td>
                         <td>
@@ -407,7 +410,7 @@
                     </tr>
                     {% endfor %}
                     {% if not grouped.get(sub.id) %}
-                    <tr><td colspan="8" class="text-center text-muted py-3">暂无可用节点，请先拉取此订阅</td></tr>
+                    <tr><td colspan="9" class="text-center text-muted py-3">暂无可用节点，请先拉取此订阅</td></tr>
                     {% endif %}
                 </tbody>
             </table>
@@ -423,15 +426,18 @@
             <button class="btn btn-outline-success btn-sm" onclick="fetchInstanceSource({{ inst.id }})">
                 <i class="bi bi-cloud-download"></i> 获取此实例
             </button>
+            <button class="btn btn-outline-danger btn-sm" id="batch-del-inst-{{ inst.id }}" onclick="batchDeleteInst({{ inst.id }})" disabled>
+                <i class="bi bi-trash"></i> 批量删除
+            </button>
         </div>
         <div class="table-responsive">
             <table class="table table-hover table-sm mb-0" id="tbl-inst-{{ inst.id }}">
                 <thead class="table-light">
                     <tr>
-                        <th width="30">#</th>
+                        <th width="30"><input type="checkbox" class="form-check-input" onclick="toggleAllInst(this, {{ inst.id }})"></th>
                         <th>名称</th>
-                        <th>协议</th>
-                        <th>地址</th>
+                        <th class="sortable" data-sort="protocol" onclick="sortTable('tbl-inst-{{ inst.id }}','protocol',this)">协议 <i class="bi bi-arrow-down-up"></i></th>
+                        <th class="sortable" data-sort="address" onclick="sortTable('tbl-inst-{{ inst.id }}','address',this)">地址 <i class="bi bi-arrow-down-up"></i></th>
                         <th>端口</th>
                         <th class="sortable" data-sort="latency" onclick="sortTable('tbl-inst-{{ inst.id }}','latency',this)">延迟 <i class="bi bi-arrow-down-up"></i></th>
                         <th class="sortable" data-sort="time" onclick="sortTable('tbl-inst-{{ inst.id }}','time',this)">入库时间 <i class="bi bi-arrow-down-up"></i></th>
@@ -440,10 +446,10 @@
                 </thead>
                 <tbody>
                     {% for proxy in verified_grouped.get(inst.id, []) %}
-                    <tr data-latency="{{ proxy.latency_ms }}" data-time="{{ proxy.created_at }}" data-inst="{{ inst.id }}">
-                        <td>{{ loop.index }}</td>
+                    <tr data-latency="{{ proxy.latency_ms }}" data-time="{{ proxy.created_at }}" data-inst="{{ inst.id }}" data-protocol="{{ proxy.protocol }}" data-address="{{ proxy.address }}" data-id="{{ proxy.id }}">
+                        <td><input type="checkbox" class="form-check-input inst-check-{{ inst.id }}" value="{{ proxy.id }}" onchange="updateBatchDelInst({{ inst.id }})"></td>
                         <td title="{{ proxy.name }}">{{ proxy.name[:30] }}{% if proxy.name|length > 30 %}...{% endif %}</td>
-                        <td><span class="badge bg-secondary">{{ proxy.protocol }}</span></td>
+                        <td><span class="badge bg-secondary">{% set _t = get_transport_type(proxy.link, proxy.protocol) %}{{ proxy.protocol }}{% if _t %}({{ _t }}){% endif %}</span></td>
                         <td><code>{{ proxy.address }}</code></td>
                         <td>{{ proxy.port }}</td>
                         <td>
@@ -459,7 +465,7 @@
                     </tr>
                     {% endfor %}
                     {% if not verified_grouped.get(inst.id) %}
-                    <tr><td colspan="8" class="text-center text-muted py-3">暂无已验证节点</td></tr>
+                    <tr><td colspan="9" class="text-center text-muted py-3">暂无已验证节点</td></tr>
                     {% endif %}
                 </tbody>
             </table>
@@ -886,6 +892,67 @@ async function deleteVerifiedProxy(id, instId) {
     } catch (e) { alert('删除失败: ' + e.message); }
 }
 
+// ---- 批量删除 ----
+function toggleAllSub(el, subId) {
+    var checks = document.querySelectorAll('.sub-check-' + subId);
+    checks.forEach(function(c) { c.checked = el.checked; });
+    updateBatchDelSub(subId);
+}
+
+function updateBatchDelSub(subId) {
+    var checks = document.querySelectorAll('.sub-check-' + subId + ':checked');
+    var btn = document.getElementById('batch-del-sub-' + subId);
+    if (btn) { btn.disabled = checks.length === 0; }
+}
+
+async function batchDeleteSub(subId) {
+    var checks = document.querySelectorAll('.sub-check-' + subId + ':checked');
+    if (checks.length === 0) return;
+    if (!confirm('确定批量删除选中的 ' + checks.length + ' 个节点？')) return;
+    var ids = Array.from(checks).map(function(c) { return parseInt(c.value); });
+    try {
+        const resp = await fetch('/api/proxies/batch-delete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ids: ids}),
+        });
+        if (resp.ok) {
+            var data = await resp.json();
+            refreshPage();
+        }
+    } catch (e) { alert('批量删除失败: ' + e.message); }
+}
+
+function toggleAllInst(el, instId) {
+    var checks = document.querySelectorAll('.inst-check-' + instId);
+    checks.forEach(function(c) { c.checked = el.checked; });
+    updateBatchDelInst(instId);
+}
+
+function updateBatchDelInst(instId) {
+    var checks = document.querySelectorAll('.inst-check-' + instId + ':checked');
+    var btn = document.getElementById('batch-del-inst-' + instId);
+    if (btn) { btn.disabled = checks.length === 0; }
+}
+
+async function batchDeleteInst(instId) {
+    var checks = document.querySelectorAll('.inst-check-' + instId + ':checked');
+    if (checks.length === 0) return;
+    if (!confirm('确定批量删除选中的 ' + checks.length + ' 个已验证节点？')) return;
+    var ids = Array.from(checks).map(function(c) { return parseInt(c.value); });
+    try {
+        const resp = await fetch('/api/verified-proxies/batch-delete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ids: ids}),
+        });
+        if (resp.ok) {
+            var data = await resp.json();
+            refreshPage();
+        }
+    } catch (e) { alert('批量删除失败: ' + e.message); }
+}
+
 async function deleteAllProxies() {
     if (!confirm('确定清除数据库内所有已保存节点？此操作不可恢复！')) return;
     try {
@@ -1059,10 +1126,10 @@ function refreshPage() {
                                        p.latency_ms < 1500 ? 'latency-medium' : 'latency-bad';
                     var nameShort = p.name.length > 30 ? p.name.substring(0, 30) + '...' : p.name;
                     var timeShort = p.created_at ? p.created_at.substring(0, 19) : '-';
-                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-sub="' + currentSubId + '">' +
-                        '<td>' + (i + 1) + '</td>' +
+                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-sub="' + currentSubId + '" data-protocol="' + p.protocol + '" data-address="' + p.address + '" data-id="' + p.id + '">' +
+                        '<td><input type="checkbox" class="form-check-input sub-check-' + currentSubId + '" value="' + p.id + '" onchange="updateBatchDelSub(' + currentSubId + ')"></td>' +
                         '<td title="' + p.name + '">' + nameShort + '</td>' +
-                        '<td><span class="badge bg-secondary">' + p.protocol + '</span></td>' +
+                        '<td><span class="badge bg-secondary">' + p.display_protocol + '</span></td>' +
                         '<td><code>' + p.address + '</code></td>' +
                         '<td>' + p.port + '</td>' +
                         '<td><span class="' + latencyClass + '">' + Math.round(p.latency_ms) + ' ms</span></td>' +
@@ -1071,9 +1138,10 @@ function refreshPage() {
                         '</tr>';
                 }).join('');
                 if (!proxies.length) {
-                    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">暂无可用节点</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">暂无可用节点</td></tr>';
                 }
                 pageState[currentSubId] = 1;
+                applySortState(currentSubId);
                 applyPagination(currentSubId);
             }
         } else if (currentTabType === 'inst' && currentInstId) {
@@ -1085,10 +1153,10 @@ function refreshPage() {
                                        p.latency_ms < 1500 ? 'latency-medium' : 'latency-bad';
                     var nameShort = p.name.length > 30 ? p.name.substring(0, 30) + '...' : p.name;
                     var timeShort = p.created_at ? p.created_at.substring(0, 19) : '-';
-                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-inst="' + currentInstId + '">' +
-                        '<td>' + (i + 1) + '</td>' +
+                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-inst="' + currentInstId + '" data-protocol="' + p.protocol + '" data-address="' + p.address + '" data-id="' + p.id + '">' +
+                        '<td><input type="checkbox" class="form-check-input inst-check-' + currentInstId + '" value="' + p.id + '" onchange="updateBatchDelInst(' + currentInstId + ')"></td>' +
                         '<td title="' + p.name + '">' + nameShort + '</td>' +
-                        '<td><span class="badge bg-secondary">' + p.protocol + '</span></td>' +
+                        '<td><span class="badge bg-secondary">' + p.display_protocol + '</span></td>' +
                         '<td><code>' + p.address + '</code></td>' +
                         '<td>' + p.port + '</td>' +
                         '<td><span class="' + latencyClass + '">' + Math.round(p.latency_ms) + ' ms</span></td>' +
@@ -1097,10 +1165,11 @@ function refreshPage() {
                         '</tr>';
                 }).join('');
                 if (!vProxies.length) {
-                    vtbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">暂无已验证节点</td></tr>';
+                    vtbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">暂无已验证节点</td></tr>';
                 }
                 var pagerKey = 'inst-' + currentInstId;
                 pageState[pagerKey] = 1;
+                applySortState(pagerKey);
                 applyPagination(pagerKey);
             }
         }
@@ -1111,6 +1180,7 @@ function refreshPage() {
 // ---- 分页逻辑 ----
 const PAGE_SIZE = 10;
 const pageState = {};  // { subId: currentPage }
+const sortState = {};  // { subId: { key: 'latency'|'protocol'|'address'|'time', dir: 'asc'|'desc' } }
 
 function initPagination() {
     document.querySelectorAll('nav[id^="pager-"]').forEach(function(nav) {
@@ -1148,14 +1218,6 @@ function applyPagination(subId) {
         row.style.display = (i >= (page - 1) * PAGE_SIZE && i < page * PAGE_SIZE) ? '' : 'none';
     });
 
-    // 更新序号（仅当前页可见行）
-    var idx = (page - 1) * PAGE_SIZE;
-    rows.forEach(function(row) {
-        if (row.style.display !== 'none') {
-            row.children[0].textContent = ++idx;
-        }
-    });
-
     // 渲染分页按钮
     var nav = document.getElementById('pager-' + subId);
     if (!nav) return;
@@ -1191,6 +1253,51 @@ function goPage(subId, page) {
 document.addEventListener('DOMContentLoaded', initPagination);
 
 // 表格排序
+// 应用已保存的排序状态（刷新数据后调用）
+function applySortState(subId) {
+    var sort = sortState[subId];
+    if (!sort) return;
+    var tableId = 'tbl-' + subId;
+    var table = document.getElementById(tableId);
+    if (!table) return;
+    var tbody = table.querySelector('tbody');
+    var rows = Array.from(tbody.querySelectorAll('tr'));
+    var key = sort.key;
+    var dir = sort.dir;
+    rows.sort(function(a, b) {
+        if (key === 'latency') {
+            var va = parseFloat(a.dataset.latency);
+            var vb = parseFloat(b.dataset.latency);
+            return dir === 'asc' ? va - vb : vb - va;
+        } else if (key === 'protocol') {
+            var va = a.dataset.protocol || '';
+            var vb = b.dataset.protocol || '';
+            return dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+        } else if (key === 'address') {
+            var va = a.dataset.address || '';
+            var vb = b.dataset.address || '';
+            return dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+        } else {
+            var va = a.dataset.time;
+            var vb = b.dataset.time;
+            return dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+        }
+    });
+    rows.forEach(function(row) { tbody.appendChild(row); });
+    // 更新表头图标
+    var th = table.querySelector('th.sortable[data-sort="' + key + '"]');
+    if (th) {
+        table.querySelectorAll('th.sortable').forEach(function(h) {
+            h.removeAttribute('data-dir');
+            var icon = h.querySelector('i');
+            if (icon) { icon.className = 'bi bi-arrow-down-up'; }
+        });
+        th.setAttribute('data-dir', dir);
+        var icon = th.querySelector('i');
+        if (icon) { icon.className = dir === 'asc' ? 'bi bi-arrow-up' : 'bi bi-arrow-down'; }
+    }
+}
+
 function sortTable(tableId, key, th) {
     var table = document.getElementById(tableId);
     if (!table) return;
@@ -1208,17 +1315,29 @@ function sortTable(tableId, key, th) {
     var icon = th.querySelector('i');
     if (icon) { icon.className = dir === 'asc' ? 'bi bi-arrow-up' : 'bi bi-arrow-down'; }
     rows.sort(function(a, b) {
-        var va = key === 'latency' ? parseFloat(a.dataset.latency) : a.dataset.time;
-        var vb = key === 'latency' ? parseFloat(b.dataset.latency) : b.dataset.time;
         if (key === 'latency') {
+            var va = parseFloat(a.dataset.latency);
+            var vb = parseFloat(b.dataset.latency);
             return dir === 'asc' ? va - vb : vb - va;
+        } else if (key === 'protocol') {
+            var va = a.dataset.protocol || '';
+            var vb = b.dataset.protocol || '';
+            return dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+        } else if (key === 'address') {
+            var va = a.dataset.address || '';
+            var vb = b.dataset.address || '';
+            return dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
         } else {
+            var va = a.dataset.time;
+            var vb = b.dataset.time;
             return dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
         }
     });
     rows.forEach(function(row) { tbody.appendChild(row); });
-    // 排序后重置到第1页并重新分页
+    // 排序后记录排序状态
     var subId = tableId.replace('tbl-', '');
+    sortState[subId] = { key: key, dir: dir };
+    // 排序后重置到第1页并重新分页
     pageState[subId] = 1;
     applyPagination(subId);
 }
@@ -1406,10 +1525,10 @@ async function refreshActiveTabNodes() {
                                        p.latency_ms < 1500 ? 'latency-medium' : 'latency-bad';
                     var nameShort = p.name.length > 30 ? p.name.substring(0, 30) + '...' : p.name;
                     var timeShort = p.created_at ? p.created_at.substring(0, 19) : '-';
-                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-sub="' + subId + '">' +
-                        '<td>' + (i + 1) + '</td>' +
+                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-sub="' + subId + '" data-protocol="' + p.protocol + '" data-address="' + p.address + '" data-id="' + p.id + '">' +
+                        '<td><input type="checkbox" class="form-check-input sub-check-' + subId + '" value="' + p.id + '" onchange="updateBatchDelSub(' + subId + ')"></td>' +
                         '<td title="' + p.name + '">' + nameShort + '</td>' +
-                        '<td><span class="badge bg-secondary">' + p.protocol + '</span></td>' +
+                        '<td><span class="badge bg-secondary">' + p.display_protocol + '</span></td>' +
                         '<td><code>' + p.address + '</code></td>' +
                         '<td>' + p.port + '</td>' +
                         '<td><span class="' + latencyClass + '">' + Math.round(p.latency_ms) + ' ms</span></td>' +
@@ -1418,7 +1537,7 @@ async function refreshActiveTabNodes() {
                         '</tr>';
                 }).join('');
                 if (!proxies.length) {
-                    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">暂无可用节点</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">暂无可用节点</td></tr>';
                 }
                 // 更新 Tab 标签上的可用数
                 var tabBtn = document.querySelector('#tab-' + subId);
@@ -1426,6 +1545,7 @@ async function refreshActiveTabNodes() {
                     var badge = tabBtn.querySelector('.badge');
                     if (badge) badge.textContent = proxies.length;
                 }
+                applySortState(subId);
                 applyPagination(subId);
             }
         } else if (tabType === 'inst') {
@@ -1440,10 +1560,10 @@ async function refreshActiveTabNodes() {
                                        p.latency_ms < 1500 ? 'latency-medium' : 'latency-bad';
                     var nameShort = p.name.length > 30 ? p.name.substring(0, 30) + '...' : p.name;
                     var timeShort = p.created_at ? p.created_at.substring(0, 19) : '-';
-                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-inst="' + instId + '">' +
-                        '<td>' + (i + 1) + '</td>' +
+                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-inst="' + instId + '" data-protocol="' + p.protocol + '" data-address="' + p.address + '" data-id="' + p.id + '">' +
+                        '<td><input type="checkbox" class="form-check-input inst-check-' + instId + '" value="' + p.id + '" onchange="updateBatchDelInst(' + instId + ')"></td>' +
                         '<td title="' + p.name + '">' + nameShort + '</td>' +
-                        '<td><span class="badge bg-secondary">' + p.protocol + '</span></td>' +
+                        '<td><span class="badge bg-secondary">' + p.display_protocol + '</span></td>' +
                         '<td><code>' + p.address + '</code></td>' +
                         '<td>' + p.port + '</td>' +
                         '<td><span class="' + latencyClass + '">' + Math.round(p.latency_ms) + ' ms</span></td>' +
@@ -1452,7 +1572,7 @@ async function refreshActiveTabNodes() {
                         '</tr>';
                 }).join('');
                 if (!vProxies.length) {
-                    vtbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">暂无已验证节点</td></tr>';
+                    vtbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">暂无已验证节点</td></tr>';
                 }
                 var tabBtn = document.querySelector('#tab-inst-' + instId);
                 if (tabBtn) {
@@ -1461,6 +1581,7 @@ async function refreshActiveTabNodes() {
                 }
                 var pagerKey = 'inst-' + instId;
                 pageState[pagerKey] = pageState[pagerKey] || 1;
+                applySortState(pagerKey);
                 applyPagination(pagerKey);
             }
         }

@@ -8,6 +8,7 @@ import logging
 from fastapi import APIRouter, Request
 
 from app import get_config, get_db, get_scheduler, get_templates
+from app.parser import get_transport_type
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,7 @@ async def index(request: Request):
             "latency_threshold": config.check.latency_threshold,
             "max_proxies": config.scheduler.max_proxies,
             "max_instance_nodes": config.scheduler.max_instance_nodes,
+            "get_transport_type": get_transport_type,
             "last_fetch_time": scheduler.last_fetch_time,
             "last_verify_time": scheduler.last_verify_time,
         },

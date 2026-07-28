@@ -134,6 +134,20 @@ class TaskScheduler:
             if socks4_count:
                 logger.info("订阅 #%d: 自动移除 %d 个 socks4 节点", sub_id, socks4_count)
 
+            # 以 (protocol, address, port) 对解析列表去重，重复的不再检测入库
+            seen_keys = set()
+            unique_proxies = []
+            for p in proxies:
+                key = (p.protocol, p.address, p.port)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                unique_proxies.append(p)
+            dup_count = len(proxies) - len(unique_proxies)
+            if dup_count > 0:
+                logger.info("订阅 #%d: 去重移除 %d 个重复节点", sub_id, dup_count)
+            proxies = unique_proxies
+
             # 使用共享 checker 检测所有节点延迟
             links = [p.link for p in proxies]
             logger.info("订阅 #%d: 开始检测 %d 个节点延迟...", sub.id, len(links))
