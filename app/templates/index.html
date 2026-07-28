@@ -410,7 +410,7 @@
                     </tr>
                     {% endfor %}
                     {% if not grouped.get(sub.id) %}
-                    <tr><td colspan="8" class="text-center text-muted py-3">暂无可用节点，请先拉取此订阅</td></tr>
+                    <tr><td colspan="9" class="text-center text-muted py-3">暂无可用节点，请先拉取此订阅</td></tr>
                     {% endif %}
                 </tbody>
             </table>
@@ -465,7 +465,7 @@
                     </tr>
                     {% endfor %}
                     {% if not verified_grouped.get(inst.id) %}
-                    <tr><td colspan="8" class="text-center text-muted py-3">暂无已验证节点</td></tr>
+                    <tr><td colspan="9" class="text-center text-muted py-3">暂无已验证节点</td></tr>
                     {% endif %}
                 </tbody>
             </table>
@@ -1138,7 +1138,7 @@ function refreshPage() {
                         '</tr>';
                 }).join('');
                 if (!proxies.length) {
-                    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">暂无可用节点</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">暂无可用节点</td></tr>';
                 }
                 pageState[currentSubId] = 1;
                 applyPagination(currentSubId);
@@ -1164,7 +1164,7 @@ function refreshPage() {
                         '</tr>';
                 }).join('');
                 if (!vProxies.length) {
-                    vtbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">暂无已验证节点</td></tr>';
+                    vtbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">暂无已验证节点</td></tr>';
                 }
                 var pagerKey = 'inst-' + currentInstId;
                 pageState[pagerKey] = 1;
@@ -1213,14 +1213,6 @@ function applyPagination(subId) {
     // 显示/隐藏行
     rows.forEach(function(row, i) {
         row.style.display = (i >= (page - 1) * PAGE_SIZE && i < page * PAGE_SIZE) ? '' : 'none';
-    });
-
-    // 更新序号（仅当前页可见行）
-    var idx = (page - 1) * PAGE_SIZE;
-    rows.forEach(function(row) {
-        if (row.style.display !== 'none') {
-            row.children[0].textContent = ++idx;
-        }
     });
 
     // 渲染分页按钮
@@ -1495,7 +1487,7 @@ async function refreshActiveTabNodes() {
                         '</tr>';
                 }).join('');
                 if (!proxies.length) {
-                    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">暂无可用节点</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">暂无可用节点</td></tr>';
                 }
                 // 更新 Tab 标签上的可用数
                 var tabBtn = document.querySelector('#tab-' + subId);
@@ -1529,7 +1521,7 @@ async function refreshActiveTabNodes() {
                         '</tr>';
                 }).join('');
                 if (!vProxies.length) {
-                    vtbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">暂无已验证节点</td></tr>';
+                    vtbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">暂无已验证节点</td></tr>';
                 }
                 var tabBtn = document.querySelector('#tab-inst-' + instId);
                 if (tabBtn) {
