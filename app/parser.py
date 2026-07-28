@@ -105,7 +105,7 @@ def filter_invalid_proxies(proxies) -> list:
     支持 ProxyInfo 和 ProxyDBRecord 对象（均含 protocol, address, link 字段）
     """
     _VLESS_SKIP_TYPES = ("type=raw", "type=xhttp", "security=reality")
-    _SS_SKIP_CIPHERS = ("chacha20-ietf", "aes-128-cfb")
+    _SS_SKIP_CIPHERS = ("chacha20-ietf", "aes-128-cfb", "chacha20-ietf-poly1305")
     filtered = []
     vmess_empty = 0
     vless_skipped = 0
@@ -157,7 +157,7 @@ def _vmess_has_uuid(link: str) -> bool:
 
 def _ss_has_skip_cipher(link: str) -> bool:
     """检查 ss 链接的加密方式是否在不兼容列表中"""
-    _SS_SKIP_CIPHERS = ("chacha20-ietf", "aes-128-cfb")
+    _SS_SKIP_CIPHERS = ("chacha20-ietf", "aes-128-cfb", "chacha20-ietf-poly1305")
     try:
         # 去掉 fragment
         line = link
