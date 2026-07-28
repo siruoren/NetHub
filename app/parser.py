@@ -100,7 +100,7 @@ def parse_subscription(content: str) -> list[ProxyInfo]:
 
 
 def filter_invalid_proxies(proxies) -> list:
-    """过滤无效协议节点：vmess 地址/UUID为空、vless 含 raw/xhttp/reality、ss 不兼容加密
+    """过滤无效协议节点：vmess 地址/UUID为空或纯tcp、vless 含 raw/xhttp/reality或纯tcp、ss 不兼容加密
 
     支持 ProxyInfo 和 ProxyDBRecord 对象（均含 protocol, address, link 字段）
     """
@@ -121,11 +121,20 @@ def filter_invalid_proxies(proxies) -> list:
                 vmess_empty += 1
                 logger.debug("过滤无效 vmess 节点（UUID为空）: %s", p.name[:50] if p.name else "")
                 continue
+            if not get_transport_type(p.link, p.protocol):
+                vmess_empty += 1
+                logger.debug("过滤 vmess 纯tcp节点: %s", p.name[:50] if p.name else "")
+                continue
         # vless 协议包含 raw/xhttp/reality 传输
-        if p.protocol == "vless" and any(t in p.link for t in _VLESS_SKIP_TYPES):
-            vless_skipped += 1
-            logger.debug("过滤 vless raw/xhttp/reality 节点: %s", p.name[:50] if p.name else "")
-            continue
+        if p.protocol == "vless":
+            if any(t in p.link for t in _VLESS_SKIP_TYPES):
+                vless_skipped += 1
+                logger.debug("过滤 vless raw/xhttp/reality 节点: %s", p.name[:50] if p.name else "")
+                continue
+            if not get_transport_type(p.link, p.protocol):
+                vless_skipped += 1
+                logger.debug("过滤 vless 纯tcp节点: %s", p.name[:50] if p.name else "")
+                continue
         # ss 协议不兼容的加密方式
         if p.protocol == "ss" and _ss_has_skip_cipher(p.link):
             ss_skipped += 1
@@ -228,15 +237,15 @@ def get_transport_type(link: str, protocol: str) -> str:
             if padding != 4:
                 config_b64 += "=" * padding
             config = json.loads(base64.b64decode(config_b64).decode("utf-8"))
-            net = config.get("net", "tcp")
-            return net if net and net != "tcp" else ""
+            net = config.get("net", "")
+            return net if net else ""
         elif protocol == "vless":
             parsed = urlparse(link)
             query = parse_qs(parsed.query)
-            net = query.get("type", ["tcp"])[0]
-            security = query.get("security", ["none"])[0]
+            net = query.get("type", [""])[0]
+            security = query.get("security", [""])[0]
             parts = []
-            if net and net != "tcp":
+            if net:
                 parts.append(net)
             if security and security != "none":
                 parts.append(security)
@@ -244,8 +253,8 @@ def get_transport_type(link: str, protocol: str) -> str:
         elif protocol == "trojan":
             parsed = urlparse(link)
             query = parse_qs(parsed.query)
-            net = query.get("type", ["tcp"])[0]
-            return net if net and net != "tcp" else ""
+            net = query.get("type", [""])[0]
+            return net if net else ""
         elif protocol in ("hysteria2", "hy2"):
             return "hysteria2"
         elif protocol == "ss":
