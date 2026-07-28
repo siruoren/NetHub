@@ -379,7 +379,7 @@
                         <th width="30">#</th>
                         <th>名称</th>
                         <th class="sortable" data-sort="protocol" onclick="sortTable('tbl-{{ sub.id }}','protocol',this)">协议 <i class="bi bi-arrow-down-up"></i></th>
-                        <th>地址</th>
+                        <th class="sortable" data-sort="address" onclick="sortTable('tbl-{{ sub.id }}','address',this)">地址 <i class="bi bi-arrow-down-up"></i></th>
                         <th>端口</th>
                         <th class="sortable" data-sort="latency" onclick="sortTable('tbl-{{ sub.id }}','latency',this)">延迟 <i class="bi bi-arrow-down-up"></i></th>
                         <th class="sortable" data-sort="time" onclick="sortTable('tbl-{{ sub.id }}','time',this)">入库时间 <i class="bi bi-arrow-down-up"></i></th>
@@ -388,7 +388,7 @@
                 </thead>
                 <tbody>
                     {% for proxy in grouped.get(sub.id, []) %}
-                    <tr data-latency="{{ proxy.latency_ms }}" data-time="{{ proxy.created_at }}" data-sub="{{ sub.id }}" data-protocol="{{ proxy.protocol }}">
+                    <tr data-latency="{{ proxy.latency_ms }}" data-time="{{ proxy.created_at }}" data-sub="{{ sub.id }}" data-protocol="{{ proxy.protocol }}" data-address="{{ proxy.address }}">
                         <td>{{ loop.index }}</td>
                         <td title="{{ proxy.name }}">{{ proxy.name[:30] }}{% if proxy.name|length > 30 %}...{% endif %}</td>
                         <td><span class="badge bg-secondary">{% set _t = get_transport_type(proxy.link, proxy.protocol) %}{{ proxy.protocol }}{% if _t %}({{ _t }}){% endif %}</span></td>
@@ -431,7 +431,7 @@
                         <th width="30">#</th>
                         <th>名称</th>
                         <th class="sortable" data-sort="protocol" onclick="sortTable('tbl-inst-{{ inst.id }}','protocol',this)">协议 <i class="bi bi-arrow-down-up"></i></th>
-                        <th>地址</th>
+                        <th class="sortable" data-sort="address" onclick="sortTable('tbl-inst-{{ inst.id }}','address',this)">地址 <i class="bi bi-arrow-down-up"></i></th>
                         <th>端口</th>
                         <th class="sortable" data-sort="latency" onclick="sortTable('tbl-inst-{{ inst.id }}','latency',this)">延迟 <i class="bi bi-arrow-down-up"></i></th>
                         <th class="sortable" data-sort="time" onclick="sortTable('tbl-inst-{{ inst.id }}','time',this)">入库时间 <i class="bi bi-arrow-down-up"></i></th>
@@ -440,7 +440,7 @@
                 </thead>
                 <tbody>
                     {% for proxy in verified_grouped.get(inst.id, []) %}
-                    <tr data-latency="{{ proxy.latency_ms }}" data-time="{{ proxy.created_at }}" data-inst="{{ inst.id }}" data-protocol="{{ proxy.protocol }}">
+                    <tr data-latency="{{ proxy.latency_ms }}" data-time="{{ proxy.created_at }}" data-inst="{{ inst.id }}" data-protocol="{{ proxy.protocol }}" data-address="{{ proxy.address }}">
                         <td>{{ loop.index }}</td>
                         <td title="{{ proxy.name }}">{{ proxy.name[:30] }}{% if proxy.name|length > 30 %}...{% endif %}</td>
                         <td><span class="badge bg-secondary">{% set _t = get_transport_type(proxy.link, proxy.protocol) %}{{ proxy.protocol }}{% if _t %}({{ _t }}){% endif %}</span></td>
@@ -1059,7 +1059,7 @@ function refreshPage() {
                                        p.latency_ms < 1500 ? 'latency-medium' : 'latency-bad';
                     var nameShort = p.name.length > 30 ? p.name.substring(0, 30) + '...' : p.name;
                     var timeShort = p.created_at ? p.created_at.substring(0, 19) : '-';
-                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-sub="' + currentSubId + '" data-protocol="' + p.protocol + '">' +
+                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-sub="' + currentSubId + '" data-protocol="' + p.protocol + '" data-address="' + p.address + '">' +
                         '<td>' + (i + 1) + '</td>' +
                         '<td title="' + p.name + '">' + nameShort + '</td>' +
                         '<td><span class="badge bg-secondary">' + p.display_protocol + '</span></td>' +
@@ -1085,7 +1085,7 @@ function refreshPage() {
                                        p.latency_ms < 1500 ? 'latency-medium' : 'latency-bad';
                     var nameShort = p.name.length > 30 ? p.name.substring(0, 30) + '...' : p.name;
                     var timeShort = p.created_at ? p.created_at.substring(0, 19) : '-';
-                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-inst="' + currentInstId + '" data-protocol="' + p.protocol + '">' +
+                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-inst="' + currentInstId + '" data-protocol="' + p.protocol + '" data-address="' + p.address + '">' +
                         '<td>' + (i + 1) + '</td>' +
                         '<td title="' + p.name + '">' + nameShort + '</td>' +
                         '<td><span class="badge bg-secondary">' + p.display_protocol + '</span></td>' +
@@ -1215,6 +1215,10 @@ function sortTable(tableId, key, th) {
         } else if (key === 'protocol') {
             var va = a.dataset.protocol || '';
             var vb = b.dataset.protocol || '';
+            return dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+        } else if (key === 'address') {
+            var va = a.dataset.address || '';
+            var vb = b.dataset.address || '';
             return dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
         } else {
             var va = a.dataset.time;
@@ -1412,7 +1416,7 @@ async function refreshActiveTabNodes() {
                                        p.latency_ms < 1500 ? 'latency-medium' : 'latency-bad';
                     var nameShort = p.name.length > 30 ? p.name.substring(0, 30) + '...' : p.name;
                     var timeShort = p.created_at ? p.created_at.substring(0, 19) : '-';
-                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-sub="' + subId + '" data-protocol="' + p.protocol + '">' +
+                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-sub="' + subId + '" data-protocol="' + p.protocol + '" data-address="' + p.address + '">' +
                         '<td>' + (i + 1) + '</td>' +
                         '<td title="' + p.name + '">' + nameShort + '</td>' +
                         '<td><span class="badge bg-secondary">' + p.display_protocol + '</span></td>' +
@@ -1446,7 +1450,7 @@ async function refreshActiveTabNodes() {
                                        p.latency_ms < 1500 ? 'latency-medium' : 'latency-bad';
                     var nameShort = p.name.length > 30 ? p.name.substring(0, 30) + '...' : p.name;
                     var timeShort = p.created_at ? p.created_at.substring(0, 19) : '-';
-                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-inst="' + instId + '" data-protocol="' + p.protocol + '">' +
+                    return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-inst="' + instId + '" data-protocol="' + p.protocol + '" data-address="' + p.address + '">' +
                         '<td>' + (i + 1) + '</td>' +
                         '<td title="' + p.name + '">' + nameShort + '</td>' +
                         '<td><span class="badge bg-secondary">' + p.display_protocol + '</span></td>' +
