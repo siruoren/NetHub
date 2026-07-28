@@ -1141,6 +1141,7 @@ function refreshPage() {
                     tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">暂无可用节点</td></tr>';
                 }
                 pageState[currentSubId] = 1;
+                applySortState(currentSubId);
                 applyPagination(currentSubId);
             }
         } else if (currentTabType === 'inst' && currentInstId) {
@@ -1168,6 +1169,7 @@ function refreshPage() {
                 }
                 var pagerKey = 'inst-' + currentInstId;
                 pageState[pagerKey] = 1;
+                applySortState(pagerKey);
                 applyPagination(pagerKey);
             }
         }
@@ -1178,6 +1180,7 @@ function refreshPage() {
 // ---- 分页逻辑 ----
 const PAGE_SIZE = 10;
 const pageState = {};  // { subId: currentPage }
+const sortState = {};  // { subId: { key: 'latency'|'protocol'|'address'|'time', dir: 'asc'|'desc' } }
 
 function initPagination() {
     document.querySelectorAll('nav[id^="pager-"]').forEach(function(nav) {
@@ -1250,6 +1253,51 @@ function goPage(subId, page) {
 document.addEventListener('DOMContentLoaded', initPagination);
 
 // 表格排序
+// 应用已保存的排序状态（刷新数据后调用）
+function applySortState(subId) {
+    var sort = sortState[subId];
+    if (!sort) return;
+    var tableId = 'tbl-' + subId;
+    var table = document.getElementById(tableId);
+    if (!table) return;
+    var tbody = table.querySelector('tbody');
+    var rows = Array.from(tbody.querySelectorAll('tr'));
+    var key = sort.key;
+    var dir = sort.dir;
+    rows.sort(function(a, b) {
+        if (key === 'latency') {
+            var va = parseFloat(a.dataset.latency);
+            var vb = parseFloat(b.dataset.latency);
+            return dir === 'asc' ? va - vb : vb - va;
+        } else if (key === 'protocol') {
+            var va = a.dataset.protocol || '';
+            var vb = b.dataset.protocol || '';
+            return dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+        } else if (key === 'address') {
+            var va = a.dataset.address || '';
+            var vb = b.dataset.address || '';
+            return dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+        } else {
+            var va = a.dataset.time;
+            var vb = b.dataset.time;
+            return dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+        }
+    });
+    rows.forEach(function(row) { tbody.appendChild(row); });
+    // 更新表头图标
+    var th = table.querySelector('th.sortable[data-sort="' + key + '"]');
+    if (th) {
+        table.querySelectorAll('th.sortable').forEach(function(h) {
+            h.removeAttribute('data-dir');
+            var icon = h.querySelector('i');
+            if (icon) { icon.className = 'bi bi-arrow-down-up'; }
+        });
+        th.setAttribute('data-dir', dir);
+        var icon = th.querySelector('i');
+        if (icon) { icon.className = dir === 'asc' ? 'bi bi-arrow-up' : 'bi bi-arrow-down'; }
+    }
+}
+
 function sortTable(tableId, key, th) {
     var table = document.getElementById(tableId);
     if (!table) return;
@@ -1286,8 +1334,10 @@ function sortTable(tableId, key, th) {
         }
     });
     rows.forEach(function(row) { tbody.appendChild(row); });
-    // 排序后重置到第1页并重新分页
+    // 排序后记录排序状态
     var subId = tableId.replace('tbl-', '');
+    sortState[subId] = { key: key, dir: dir };
+    // 排序后重置到第1页并重新分页
     pageState[subId] = 1;
     applyPagination(subId);
 }
@@ -1495,6 +1545,7 @@ async function refreshActiveTabNodes() {
                     var badge = tabBtn.querySelector('.badge');
                     if (badge) badge.textContent = proxies.length;
                 }
+                applySortState(subId);
                 applyPagination(subId);
             }
         } else if (tabType === 'inst') {
@@ -1530,6 +1581,7 @@ async function refreshActiveTabNodes() {
                 }
                 var pagerKey = 'inst-' + instId;
                 pageState[pagerKey] = pageState[pagerKey] || 1;
+                applySortState(pagerKey);
                 applyPagination(pagerKey);
             }
         }
