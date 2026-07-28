@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from app import get_checker, get_config, get_db, get_scheduler
 from app.generator import generate_clash_subscription, generate_plain_subscription, generate_v2ray_subscription
-from app.parser import filter_invalid_proxies
+from app.parser import filter_invalid_proxies, get_transport_type
 
 logger = logging.getLogger(__name__)
 
@@ -431,9 +431,12 @@ async def delete_verified_proxy(proxy_id: int):
 
 def _proxy_to_dict(proxy) -> dict:
     """将 ProxyDBRecord 转为 API 响应字典"""
+    transport = get_transport_type(proxy.link, proxy.protocol)
+    display_protocol = f"{proxy.protocol}({transport})" if transport else proxy.protocol
     return {
         "id": proxy.id,
         "protocol": proxy.protocol,
+        "display_protocol": display_protocol,
         "name": proxy.name,
         "address": proxy.address,
         "port": proxy.port,

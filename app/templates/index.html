@@ -391,7 +391,7 @@
                     <tr data-latency="{{ proxy.latency_ms }}" data-time="{{ proxy.created_at }}" data-sub="{{ sub.id }}">
                         <td>{{ loop.index }}</td>
                         <td title="{{ proxy.name }}">{{ proxy.name[:30] }}{% if proxy.name|length > 30 %}...{% endif %}</td>
-                        <td><span class="badge bg-secondary">{{ proxy.protocol }}</span></td>
+                        <td><span class="badge bg-secondary">{% set _t = get_transport_type(proxy.link, proxy.protocol) %}{{ proxy.protocol }}{% if _t %}({{ _t }}){% endif %}</span></td>
                         <td><code>{{ proxy.address }}</code></td>
                         <td>{{ proxy.port }}</td>
                         <td>
@@ -443,7 +443,7 @@
                     <tr data-latency="{{ proxy.latency_ms }}" data-time="{{ proxy.created_at }}" data-inst="{{ inst.id }}">
                         <td>{{ loop.index }}</td>
                         <td title="{{ proxy.name }}">{{ proxy.name[:30] }}{% if proxy.name|length > 30 %}...{% endif %}</td>
-                        <td><span class="badge bg-secondary">{{ proxy.protocol }}</span></td>
+                        <td><span class="badge bg-secondary">{% set _t = get_transport_type(proxy.link, proxy.protocol) %}{{ proxy.protocol }}{% if _t %}({{ _t }}){% endif %}</span></td>
                         <td><code>{{ proxy.address }}</code></td>
                         <td>{{ proxy.port }}</td>
                         <td>
@@ -1062,7 +1062,7 @@ function refreshPage() {
                     return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-sub="' + currentSubId + '">' +
                         '<td>' + (i + 1) + '</td>' +
                         '<td title="' + p.name + '">' + nameShort + '</td>' +
-                        '<td><span class="badge bg-secondary">' + p.protocol + '</span></td>' +
+                        '<td><span class="badge bg-secondary">' + p.display_protocol + '</span></td>' +
                         '<td><code>' + p.address + '</code></td>' +
                         '<td>' + p.port + '</td>' +
                         '<td><span class="' + latencyClass + '">' + Math.round(p.latency_ms) + ' ms</span></td>' +
@@ -1088,7 +1088,7 @@ function refreshPage() {
                     return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-inst="' + currentInstId + '">' +
                         '<td>' + (i + 1) + '</td>' +
                         '<td title="' + p.name + '">' + nameShort + '</td>' +
-                        '<td><span class="badge bg-secondary">' + p.protocol + '</span></td>' +
+                        '<td><span class="badge bg-secondary">' + p.display_protocol + '</span></td>' +
                         '<td><code>' + p.address + '</code></td>' +
                         '<td>' + p.port + '</td>' +
                         '<td><span class="' + latencyClass + '">' + Math.round(p.latency_ms) + ' ms</span></td>' +
@@ -1409,7 +1409,7 @@ async function refreshActiveTabNodes() {
                     return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-sub="' + subId + '">' +
                         '<td>' + (i + 1) + '</td>' +
                         '<td title="' + p.name + '">' + nameShort + '</td>' +
-                        '<td><span class="badge bg-secondary">' + p.protocol + '</span></td>' +
+                        '<td><span class="badge bg-secondary">' + p.display_protocol + '</span></td>' +
                         '<td><code>' + p.address + '</code></td>' +
                         '<td>' + p.port + '</td>' +
                         '<td><span class="' + latencyClass + '">' + Math.round(p.latency_ms) + ' ms</span></td>' +
@@ -1443,7 +1443,7 @@ async function refreshActiveTabNodes() {
                     return '<tr data-latency="' + p.latency_ms + '" data-time="' + p.created_at + '" data-inst="' + instId + '">' +
                         '<td>' + (i + 1) + '</td>' +
                         '<td title="' + p.name + '">' + nameShort + '</td>' +
-                        '<td><span class="badge bg-secondary">' + p.protocol + '</span></td>' +
+                        '<td><span class="badge bg-secondary">' + p.display_protocol + '</span></td>' +
                         '<td><code>' + p.address + '</code></td>' +
                         '<td>' + p.port + '</td>' +
                         '<td><span class="' + latencyClass + '">' + Math.round(p.latency_ms) + ' ms</span></td>' +

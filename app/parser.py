@@ -11,7 +11,7 @@ import base64
 import difflib
 import json
 import logging
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, parse_qs
 
 import aiohttp
 import yaml
@@ -99,28 +99,90 @@ def parse_subscription(content: str) -> list[ProxyInfo]:
     return filter_invalid_proxies(share_links)
 
 
-def filter_invalid_proxies(proxies: list[ProxyInfo]) -> list[ProxyInfo]:
-    """过滤无效协议节点：vmess 地址为空、vless 含 raw/xhttp 传输"""
-    _VLESS_SKIP_TYPES = ("type=raw", "type=xhttp")
+def filter_invalid_proxies(proxies) -> list:
+    """过滤无效协议节点：vmess 地址/UUID为空、vless 含 raw/xhttp/reality 传输
+
+    支持 ProxyInfo 和 ProxyDBRecord 对象（均含 protocol, address, link 字段）
+    """
+    _VLESS_SKIP_TYPES = ("type=raw", "type=xhttp", "security=reality")
     filtered = []
+    vmess_empty = 0
+    vless_skipped = 0
     for p in proxies:
-        # vmess 地址为空（如 vmess() 等无效配置）
-        if p.protocol == "vmess" and not p.address:
-            logger.debug("过滤无效 vmess 节点（地址为空）: %s", p.name[:50] if p.name else "")
-            continue
-        # vless 协议包含 raw/xhttp 传输（涵盖 raw、raw+reality、xhttp、xhttp+tls、xhttp+reality）
+        # vmess 地址为空或 UUID 为空（如 vmess() 等无效配置）
+        if p.protocol == "vmess":
+            if not p.address:
+                vmess_empty += 1
+                logger.debug("过滤无效 vmess 节点（地址为空）: %s", p.name[:50] if p.name else "")
+                continue
+            if not _vmess_has_uuid(p.link):
+                vmess_empty += 1
+                logger.debug("过滤无效 vmess 节点（UUID为空）: %s", p.name[:50] if p.name else "")
+                continue
+        # vless 协议包含 raw/xhttp/reality 传输
         if p.protocol == "vless" and any(t in p.link for t in _VLESS_SKIP_TYPES):
-            logger.debug("过滤 vless raw/xhttp 节点: %s", p.name[:50] if p.name else "")
+            vless_skipped += 1
+            logger.debug("过滤 vless raw/xhttp/reality 节点: %s", p.name[:50] if p.name else "")
             continue
         filtered.append(p)
     removed = len(proxies) - len(filtered)
     if removed > 0:
-        vless_skipped = sum(1 for p in proxies if p.protocol == "vless" and any(t in p.link for t in _VLESS_SKIP_TYPES))
-        logger.info("过滤无效协议节点 %d 个（vmess 空 %d, vless raw/xhttp %d）",
-                    removed,
-                    sum(1 for p in proxies if p.protocol == "vmess" and not p.address),
-                    vless_skipped)
+        logger.info("过滤无效协议节点 %d 个（vmess 无效 %d, vless raw/xhttp/reality %d）",
+                    removed, vmess_empty, vless_skipped)
     return filtered
+
+
+def _vmess_has_uuid(link: str) -> bool:
+    """检查 vmess 链接的 UUID 是否存在"""
+    try:
+        config_b64 = link[8:]
+        if not config_b64.strip():
+            return False
+        padding = 4 - len(config_b64) % 4
+        if padding != 4:
+            config_b64 += "=" * padding
+        config = json.loads(base64.b64decode(config_b64).decode("utf-8"))
+        uuid_val = config.get("id", "").strip()
+        return bool(uuid_val)
+    except Exception:
+        return False
+
+
+def get_transport_type(link: str, protocol: str) -> str:
+    """从节点链接中提取传输类型，用于显示（如 vmess(ws)）
+
+    返回传输类型字符串，无传输类型时返回空字符串
+    """
+    try:
+        if protocol == "vmess":
+            config_b64 = link[8:]
+            padding = 4 - len(config_b64) % 4
+            if padding != 4:
+                config_b64 += "=" * padding
+            config = json.loads(base64.b64decode(config_b64).decode("utf-8"))
+            net = config.get("net", "tcp")
+            return net if net and net != "tcp" else ""
+        elif protocol == "vless":
+            parsed = urlparse(link)
+            query = parse_qs(parsed.query)
+            net = query.get("type", ["tcp"])[0]
+            security = query.get("security", ["none"])[0]
+            parts = []
+            if net and net != "tcp":
+                parts.append(net)
+            if security and security != "none":
+                parts.append(security)
+            return "+".join(parts) if parts else ""
+        elif protocol == "trojan":
+            parsed = urlparse(link)
+            query = parse_qs(parsed.query)
+            net = query.get("type", ["tcp"])[0]
+            return net if net and net != "tcp" else ""
+        elif protocol in ("hysteria2", "hy2"):
+            return "hysteria2"
+    except Exception:
+        pass
+    return ""
 
 
 def _try_parse_line(line: str) -> ProxyInfo | None:
