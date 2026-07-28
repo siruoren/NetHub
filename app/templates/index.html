@@ -895,7 +895,10 @@ async function deleteVerifiedProxy(id, instId) {
 // ---- 批量删除 ----
 function toggleAllSub(el, subId) {
     var checks = document.querySelectorAll('.sub-check-' + subId);
-    checks.forEach(function(c) { c.checked = el.checked; });
+    checks.forEach(function(c) {
+        var row = c.closest('tr');
+        if (row && row.style.display !== 'none') c.checked = el.checked;
+    });
     updateBatchDelSub(subId);
 }
 
@@ -925,7 +928,10 @@ async function batchDeleteSub(subId) {
 
 function toggleAllInst(el, instId) {
     var checks = document.querySelectorAll('.inst-check-' + instId);
-    checks.forEach(function(c) { c.checked = el.checked; });
+    checks.forEach(function(c) {
+        var row = c.closest('tr');
+        if (row && row.style.display !== 'none') c.checked = el.checked;
+    });
     updateBatchDelInst(instId);
 }
 
