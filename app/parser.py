@@ -100,14 +100,16 @@ def parse_subscription(content: str) -> list[ProxyInfo]:
 
 
 def filter_invalid_proxies(proxies) -> list:
-    """过滤无效协议节点：vmess 地址/UUID为空、vless 含 raw/xhttp/reality 传输
+    """过滤无效协议节点：vmess 地址/UUID为空、vless 含 raw/xhttp/reality、ss 不兼容加密
 
     支持 ProxyInfo 和 ProxyDBRecord 对象（均含 protocol, address, link 字段）
     """
     _VLESS_SKIP_TYPES = ("type=raw", "type=xhttp", "security=reality")
+    _SS_SKIP_CIPHERS = ("chacha20-ietf", "aes-128-cfb")
     filtered = []
     vmess_empty = 0
     vless_skipped = 0
+    ss_skipped = 0
     for p in proxies:
         # vmess 地址为空或 UUID 为空（如 vmess() 等无效配置）
         if p.protocol == "vmess":
@@ -124,11 +126,16 @@ def filter_invalid_proxies(proxies) -> list:
             vless_skipped += 1
             logger.debug("过滤 vless raw/xhttp/reality 节点: %s", p.name[:50] if p.name else "")
             continue
+        # ss 协议不兼容的加密方式
+        if p.protocol == "ss" and _ss_has_skip_cipher(p.link):
+            ss_skipped += 1
+            logger.debug("过滤 ss 不兼容加密节点: %s", p.name[:50] if p.name else "")
+            continue
         filtered.append(p)
     removed = len(proxies) - len(filtered)
     if removed > 0:
-        logger.info("过滤无效协议节点 %d 个（vmess 无效 %d, vless raw/xhttp/reality %d）",
-                    removed, vmess_empty, vless_skipped)
+        logger.info("过滤无效协议节点 %d 个（vmess 无效 %d, vless raw/xhttp/reality %d, ss 不兼容 %d）",
+                    removed, vmess_empty, vless_skipped, ss_skipped)
     return filtered
 
 
@@ -146,6 +153,67 @@ def _vmess_has_uuid(link: str) -> bool:
         return bool(uuid_val)
     except Exception:
         return False
+
+
+def _ss_has_skip_cipher(link: str) -> bool:
+    """检查 ss 链接的加密方式是否在不兼容列表中"""
+    _SS_SKIP_CIPHERS = ("chacha20-ietf", "aes-128-cfb")
+    try:
+        # 去掉 fragment
+        line = link
+        if "#" in line:
+            line = line[:line.rindex("#")]
+        ss_content = line[5:]  # 去掉 'ss://'
+        cipher = ""
+        if "@" in ss_content:
+            # SIP002 格式: ss://base64(method:password)@address:port
+            at_idx = ss_content.rindex("@")
+            user_info_b64 = ss_content[:at_idx]
+            padding = 4 - len(user_info_b64) % 4
+            if padding != 4:
+                user_info_b64 += "=" * padding
+            decoded = base64.b64decode(user_info_b64).decode("utf-8")
+            cipher = decoded.split(":", 1)[0]
+        else:
+            # 传统格式: ss://base64(method:password@address:port)
+            padding = 4 - len(ss_content) % 4
+            if padding != 4:
+                ss_content += "=" * padding
+            decoded = base64.b64decode(ss_content).decode("utf-8")
+            if "@" in decoded:
+                user_info = decoded.rsplit("@", 1)[0]
+                cipher = user_info.split(":", 1)[0]
+        return cipher.lower() in _SS_SKIP_CIPHERS
+    except Exception:
+        return False
+
+
+def _ss_get_cipher(link: str) -> str:
+    """从 ss 链接中提取加密方式"""
+    try:
+        line = link
+        if "#" in line:
+            line = line[:line.rindex("#")]
+        ss_content = line[5:]
+        if "@" in ss_content:
+            at_idx = ss_content.rindex("@")
+            user_info_b64 = ss_content[:at_idx]
+            padding = 4 - len(user_info_b64) % 4
+            if padding != 4:
+                user_info_b64 += "=" * padding
+            decoded = base64.b64decode(user_info_b64).decode("utf-8")
+            return decoded.split(":", 1)[0]
+        else:
+            padding = 4 - len(ss_content) % 4
+            if padding != 4:
+                ss_content += "=" * padding
+            decoded = base64.b64decode(ss_content).decode("utf-8")
+            if "@" in decoded:
+                user_info = decoded.rsplit("@", 1)[0]
+                return user_info.split(":", 1)[0]
+    except Exception:
+        pass
+    return ""
 
 
 def get_transport_type(link: str, protocol: str) -> str:
@@ -180,6 +248,8 @@ def get_transport_type(link: str, protocol: str) -> str:
             return net if net and net != "tcp" else ""
         elif protocol in ("hysteria2", "hy2"):
             return "hysteria2"
+        elif protocol == "ss":
+            return _ss_get_cipher(link)
     except Exception:
         pass
     return ""
