@@ -553,18 +553,20 @@ class ProxyDatabase:
         self,
         items: list[tuple[ProxyInfo, str, str, int]],
     ) -> tuple[int, int, int, list[str]]:
-        """基于协议+地址+端口精准同步已验证节点
+        """基于协议+地址+端口精准同步已验证节点（全局去重）
 
         items: [(ProxyInfo, instance_node_name, instance_node_address, instance_source_id), ...]
         返回: (新增数, 更新数, 删除数, 新增节点的link列表)
 
         逻辑：
         1. 获取该实例下所有已验证节点，按 (protocol, address, port) 建索引
-        2. 遍历传入的节点：
-           - 协议+地址+端口已存在且 link 相同 → 跳过
-           - 协议+地址+端口已存在但 link 变化 → UPDATE link 及其他字段
-           - 协议+地址+端口不存在 → INSERT
-        3. 不在当前已连接列表中的节点保留不清理
+        2. 获取全局已验证节点中所有 (protocol, address, port) 键集合，用于全局去重
+        3. 遍历传入的节点：
+           - 协议+地址+端口已存在于本实例且 link 相同 → 跳过
+           - 协议+地址+端口已存在于本实例但 link 变化 → UPDATE link 及其他字段
+           - 协议+地址+端口不存在于本实例，但存在于其他实例 → 不入库（全局去重）
+           - 协议+地址+端口全局不存在 → INSERT
+        4. 不在当前已连接列表中的节点保留不清理
         """
         if not items:
             return 0, 0, 0, []
@@ -591,8 +593,18 @@ class ProxyDatabase:
                 "instance_node_address": row["instance_node_address"] or "",
             }
 
+        # 获取全局已验证节点中所有 (protocol, address, port) 键（跨实例去重）
+        cursor = await self._db.execute(
+            "SELECT DISTINCT protocol, address, port FROM verified_proxies"
+        )
+        global_rows = await cursor.fetchall()
+        global_keys: set[tuple[str, str, str]] = set()
+        for row in global_rows:
+            global_keys.add((row["protocol"], row["address"], row["port"]))
+
         added = 0
         updated = 0
+        skipped_duplicate = 0
         new_links: list[str] = []
         matched_keys: set[tuple[str, str, str]] = set()
 
@@ -617,6 +629,12 @@ class ProxyDatabase:
                     except Exception:
                         pass
             else:
+                # 检查全局是否已存在（其他实例源已有此节点）
+                if key in global_keys:
+                    skipped_duplicate += 1
+                    logger.debug("全局去重跳过: %s(%s:%s) 已存在于其他实例源",
+                                 proxy.protocol, proxy.address, proxy.port)
+                    continue
                 # 新节点，UNIQUE(instance_source_id, protocol, address, port) 保证不重复
                 try:
                     cursor = await self._db.execute(
@@ -631,9 +649,12 @@ class ProxyDatabase:
                     if cursor.rowcount > 0:
                         added += 1
                         new_links.append(proxy.link)
+                        global_keys.add(key)  # 新增后更新全局键集合
                 except Exception:
                     pass
 
+        if skipped_duplicate > 0:
+            logger.info("全局去重跳过 %d 个节点（已在其他实例源中存在）", skipped_duplicate)
         if added or updated:
             self._invalidate_stats()
         return added, updated, 0, new_links
