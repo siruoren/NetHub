@@ -4,9 +4,13 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta, timezone
 
+import logging
+
 import aiosqlite
 
 from app.models import ProxyDBRecord, ProxyInfo, SubscriptionRecord, InstanceSourceRecord
+
+logger = logging.getLogger(__name__)
 
 
 class ProxyDatabase:
