@@ -41,8 +41,8 @@
 ### Docker Compose（推荐）
 
 ```bash
-git clone https://github.com/your-username/proxy_pool.git
-cd proxy_pool
+git clone https://github.com/your-username/NetHub.git
+cd NetHub
 
 # 按需修改配置
 vim config.yaml
