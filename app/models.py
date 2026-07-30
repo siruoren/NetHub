@@ -72,4 +72,3 @@ class InstanceSourceRecord:
     total_count: int  # 最新一次获取的节点总数（已验证库中该实例的节点数）
     fetch_status: str  # 拉取状态: idle / updating / success / failed
     connected_count: int  # 最新一次实例实际已连接的节点数
-    max_nodes: int  # 该实例最大已验证入库节点数，0=不限制

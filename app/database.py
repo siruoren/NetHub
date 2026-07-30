@@ -73,8 +73,7 @@ class ProxyDatabase:
                 created_at        TEXT    DEFAULT '',
                 empty_days        INTEGER DEFAULT 0,
                 total_count       INTEGER DEFAULT 0,
-                fetch_status      TEXT    DEFAULT 'idle',
-                max_nodes         INTEGER DEFAULT 0
+                fetch_status      TEXT    DEFAULT 'idle'
             );
 
             CREATE INDEX IF NOT EXISTS idx_subscriptions_url ON subscriptions(url);
@@ -96,8 +95,7 @@ class ProxyDatabase:
                 created_at        TEXT    DEFAULT '',
                 total_count       INTEGER DEFAULT 0,
                 fetch_status      TEXT    DEFAULT 'idle',
-                connected_count   INTEGER DEFAULT 0,
-                max_nodes         INTEGER DEFAULT 0
+                connected_count   INTEGER DEFAULT 0
             );
 
             CREATE INDEX IF NOT EXISTS idx_instance_sources_base_url ON instance_sources(base_url);
@@ -281,24 +279,12 @@ class ProxyDatabase:
             await self._db.commit()
         except Exception:
             pass
-        try:
-            await self._db.execute("ALTER TABLE subscriptions ADD COLUMN max_nodes INTEGER DEFAULT 0")
-            await self._db.commit()
-        except Exception:
-            pass
-
         # 迁移：为 instance_sources 表添加新列
         try:
             await self._db.execute("ALTER TABLE instance_sources ADD COLUMN connected_count INTEGER DEFAULT 0")
             await self._db.commit()
         except Exception:
             pass
-        try:
-            await self._db.execute("ALTER TABLE instance_sources ADD COLUMN max_nodes INTEGER DEFAULT 0")
-            await self._db.commit()
-        except Exception:
-            pass
-
     async def close(self) -> None:
         """关闭数据库连接"""
         if self._db:
@@ -1211,7 +1197,6 @@ class ProxyDatabase:
             total_count=row["total_count"] if "total_count" in row.keys() else 0,
             fetch_status=row["fetch_status"] if "fetch_status" in row.keys() else "idle",
             connected_count=row["connected_count"] if "connected_count" in row.keys() else 0,
-            max_nodes=row["max_nodes"] if "max_nodes" in row.keys() else 0,
         )
 
     async def add_instance_source(self, base_url: str, username: str, password: str,
@@ -1256,30 +1241,6 @@ class ProxyDatabase:
         cursor = await self._db.execute("SELECT * FROM instance_sources WHERE enabled = 1 ORDER BY id ASC")
         rows = await cursor.fetchall()
         return [self._row_to_instance_source(row) for row in rows]
-
-    async def enforce_max_verified_proxies(self, instance_source_id: int, max_count: int) -> int:
-        """执行实例已验证节点入库限制，超出则优先删除延迟为-1的，再按入库最久、延迟最高删除，返回删除数量"""
-        if max_count <= 0:
-            return 0
-        cursor = await self._db.execute(
-            "SELECT COUNT(*) as cnt FROM verified_proxies WHERE instance_source_id = ?",
-            (instance_source_id,),
-        )
-        total = (await cursor.fetchone())["cnt"]
-        if total <= max_count:
-            return 0
-        excess = total - max_count
-        cursor = await self._db.execute(
-            """DELETE FROM verified_proxies WHERE id IN (
-                SELECT id FROM verified_proxies WHERE instance_source_id = ?
-                ORDER BY (CASE WHEN latency_ms = -1 THEN 0 ELSE 1 END),
-                         created_at ASC, latency_ms DESC LIMIT ?
-            )""",
-            (instance_source_id, excess),
-        )
-        await self._db.commit()
-        self._invalidate_stats()
-        return cursor.rowcount
 
     async def enforce_max_all_verified_proxies(self, max_count: int) -> int:
         """执行全局实例节点限制，超出则优先删除延迟为-1的，再按入库最久+延迟最高优先删除"""
