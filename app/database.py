@@ -428,7 +428,7 @@ class ProxyDatabase:
         return cursor.rowcount
 
     async def enforce_max_proxies(self, max_count: int) -> int:
-        """强制执行最大条目数限制，超出则优先删除延迟最大、历史最老的节点，返回删除数量"""
+        """强制执行最大条目数限制，超出则优先删除入库最久、延迟最高的节点，返回删除数量"""
         if max_count <= 0:
             return 0
         cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM proxies")
@@ -438,7 +438,7 @@ class ProxyDatabase:
         excess = total - max_count
         cursor = await self._db.execute(
             """DELETE FROM proxies WHERE id IN (
-                SELECT id FROM proxies ORDER BY latency_ms DESC, created_at ASC LIMIT ?
+                SELECT id FROM proxies ORDER BY created_at ASC, latency_ms DESC LIMIT ?
             )""",
             (excess,),
         )
@@ -449,7 +449,7 @@ class ProxyDatabase:
     async def enforce_max_proxies_with_verified(self, max_count: int) -> int:
         """全局订阅节点限制（仅限制订阅入库节点总数，不涉及已验证库）
 
-        超出则优先删除延迟最大、入库最老的订阅节点
+        超出则优先删除入库最久、延迟最高的订阅节点
         """
         if max_count <= 0:
             return 0
@@ -460,7 +460,7 @@ class ProxyDatabase:
         excess = total - max_count
         cursor = await self._db.execute(
             """DELETE FROM proxies WHERE id IN (
-                SELECT id FROM proxies ORDER BY latency_ms DESC, created_at ASC LIMIT ?
+                SELECT id FROM proxies ORDER BY created_at ASC, latency_ms DESC LIMIT ?
             )""",
             (excess,),
         )
@@ -1087,15 +1087,15 @@ class ProxyDatabase:
         """标记统计缓存需要刷新"""
         self._stats_dirty = True
 
-    async def get_stats(self) -> dict:
+    async def get_stats(self, max_latency: float = 0) -> dict:
         """获取统计信息（带内存缓存）
 
         total: 订阅源数量
-        available: 可用节点数
+        available: 可用节点数（延迟达标且未失败）
         avg_latency_ms: 平均延迟
-        protocol_distribution: 协议分布
+        protocol_distribution: 协议分布（与可用节点过滤条件一致）
 
-        使用一条 SQL 合并查询，减少 4 次独立数据库操作为 2 次（subscriptions + proxies）
+        max_latency: 延迟阈值，>0 时按可用节点条件过滤；=0 时仅过滤 latency_ms > 0
         """
         if not self._stats_dirty and self._stats_cache is not None:
             return self._stats_cache
@@ -1103,21 +1103,34 @@ class ProxyDatabase:
         cursor = await self._db.execute("SELECT COUNT(*) as total FROM subscriptions")
         total = (await cursor.fetchone())["total"]
 
-        # 一条 SQL 同时获取可用数、平均延迟和协议分布
-        cursor = await self._db.execute("""
-            SELECT
-                COUNT(*) as available,
-                AVG(latency_ms) as avg_latency,
-                protocol
-            FROM proxies WHERE latency_ms > 0
-            GROUP BY protocol
-        """)
+        # 一条 SQL 同时获取可用数、平均延迟和协议分布（与 get_available_proxies 过滤条件一致）
+        if max_latency > 0:
+            cursor = await self._db.execute("""
+                SELECT
+                    COUNT(*) as available,
+                    AVG(latency_ms) as avg_latency,
+                    protocol
+                FROM proxies WHERE latency_ms > 0 AND latency_ms <= ? AND fail_count = 0
+                GROUP BY protocol
+            """, (max_latency,))
+        else:
+            cursor = await self._db.execute("""
+                SELECT
+                    COUNT(*) as available,
+                    AVG(latency_ms) as avg_latency,
+                    protocol
+                FROM proxies WHERE latency_ms > 0
+                GROUP BY protocol
+            """)
         rows = await cursor.fetchall()
         available = sum(row["available"] for row in rows)
         avg_latency = sum(row["available"] * (row["avg_latency"] or 0) for row in rows) / available if available > 0 else 0
         protocol_dist = {row["protocol"]: row["available"] for row in rows}
 
-        v_cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies WHERE latency_ms > 0")
+        if max_latency > 0:
+            v_cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies WHERE latency_ms > 0 AND latency_ms <= ?", (max_latency,))
+        else:
+            v_cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies WHERE latency_ms > 0")
         v_available = (await v_cursor.fetchone())["cnt"]
 
         # Total instance nodes (all verified nodes regardless of latency)
@@ -1245,7 +1258,7 @@ class ProxyDatabase:
         return [self._row_to_instance_source(row) for row in rows]
 
     async def enforce_max_verified_proxies(self, instance_source_id: int, max_count: int) -> int:
-        """执行实例已验证节点入库限制，超出则优先删除延迟为-1的，再按延迟最高、入库最久删除，返回删除数量"""
+        """执行实例已验证节点入库限制，超出则优先删除延迟为-1的，再按入库最久、延迟最高删除，返回删除数量"""
         if max_count <= 0:
             return 0
         cursor = await self._db.execute(
@@ -1260,7 +1273,7 @@ class ProxyDatabase:
             """DELETE FROM verified_proxies WHERE id IN (
                 SELECT id FROM verified_proxies WHERE instance_source_id = ?
                 ORDER BY (CASE WHEN latency_ms = -1 THEN 0 ELSE 1 END),
-                         latency_ms DESC, created_at ASC LIMIT ?
+                         created_at ASC, latency_ms DESC LIMIT ?
             )""",
             (instance_source_id, excess),
         )
@@ -1269,7 +1282,7 @@ class ProxyDatabase:
         return cursor.rowcount
 
     async def enforce_max_all_verified_proxies(self, max_count: int) -> int:
-        """执行全局实例节点限制，超出则优先删除延迟为-1的，再按延迟最高+入库最久优先删除"""
+        """执行全局实例节点限制，超出则优先删除延迟为-1的，再按入库最久+延迟最高优先删除"""
         if max_count <= 0:
             return 0
         cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies")
@@ -1281,7 +1294,7 @@ class ProxyDatabase:
             """DELETE FROM verified_proxies WHERE id IN (
                 SELECT id FROM verified_proxies
                 ORDER BY (CASE WHEN latency_ms = -1 THEN 0 ELSE 1 END),
-                         latency_ms DESC, created_at ASC LIMIT ?
+                         created_at ASC, latency_ms DESC LIMIT ?
             )""",
             (excess,),
         )

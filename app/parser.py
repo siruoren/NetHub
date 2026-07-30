@@ -99,18 +99,29 @@ def parse_subscription(content: str) -> list[ProxyInfo]:
     return filter_invalid_proxies(share_links)
 
 
+_TROJAN_SPECIAL_CHARS = set('^()!*@#$%&+=[]{}|\\:;"\'<>,?~`')
+
+
 def filter_invalid_proxies(proxies) -> list:
-    """过滤无效协议节点：vmess 地址/UUID为空或纯tcp、vless 含 raw/xhttp/reality或纯tcp、ss 不兼容加密
+    """过滤无效协议节点：vmess 地址/UUID为空或纯tcp、vless 含 raw/xhttp/reality或纯tcp、ss 不兼容加密、
+    hysteria2 不支持、trojan 密码含特殊字符
 
     支持 ProxyInfo 和 ProxyDBRecord 对象（均含 protocol, address, link 字段）
     """
-    _VLESS_SKIP_TYPES = ("type=raw", "type=xhttp", "security=reality")
-    _SS_SKIP_CIPHERS = ("chacha20-ietf", "aes-128-cfb", "chacha20-ietf-poly1305", "2022-blake3-aes-128-gcm")
+    _VLESS_SKIP_TYPES = ("type=raw", "type=xhttp", "type=httpupgrade", "security=reality")
+    _SS_SKIP_CIPHERS = ("chacha20-ietf", "aes-128-cfb", "aes-256-cfb", "chacha20-ietf-poly1305", "2022-blake3-aes-128-gcm")
     filtered = []
     vmess_empty = 0
     vless_skipped = 0
     ss_skipped = 0
+    trojan_skipped = 0
+    hy2_skipped = 0
     for p in proxies:
+        # hysteria2/hy2 协议内核不支持
+        if p.protocol in ("hysteria2", "hy2"):
+            hy2_skipped += 1
+            logger.debug("过滤 hysteria2 节点（内核不支持）: %s", p.name[:50] if p.name else "")
+            continue
         # vmess 地址为空或 UUID 为空（如 vmess() 等无效配置）
         if p.protocol == "vmess":
             if not p.address:
@@ -135,6 +146,11 @@ def filter_invalid_proxies(proxies) -> list:
                 vless_skipped += 1
                 logger.debug("过滤 vless 纯tcp节点: %s", p.name[:50] if p.name else "")
                 continue
+        # trojan 密码包含特殊字符（内核不支持）
+        if p.protocol == "trojan" and _trojan_has_special_chars(p.link):
+            trojan_skipped += 1
+            logger.debug("过滤 trojan 密码含特殊字符节点: %s", p.name[:50] if p.name else "")
+            continue
         # ss 协议不兼容的加密方式
         if p.protocol == "ss" and _ss_has_skip_cipher(p.link):
             ss_skipped += 1
@@ -143,9 +159,23 @@ def filter_invalid_proxies(proxies) -> list:
         filtered.append(p)
     removed = len(proxies) - len(filtered)
     if removed > 0:
-        logger.info("过滤无效协议节点 %d 个（vmess 无效 %d, vless raw/xhttp/reality %d, ss 不兼容 %d）",
-                    removed, vmess_empty, vless_skipped, ss_skipped)
+        logger.info("过滤无效协议节点 %d 个（vmess 无效 %d, vless %d, ss %d, trojan %d, hysteria2 %d）",
+                    removed, vmess_empty, vless_skipped, ss_skipped, trojan_skipped, hy2_skipped)
     return filtered
+
+
+def _trojan_has_special_chars(link: str) -> bool:
+    """检查 trojan 链接的密码是否包含特殊字符（内核不支持）"""
+    try:
+        from urllib.parse import urlparse, unquote
+        parsed = urlparse(link)
+        if parsed.username:
+            password = unquote(parsed.username)
+            if any(c in _TROJAN_SPECIAL_CHARS for c in password):
+                return True
+        return False
+    except Exception:
+        return False
 
 
 def _vmess_has_uuid(link: str) -> bool:
@@ -166,18 +196,24 @@ def _vmess_has_uuid(link: str) -> bool:
 
 def _ss_has_skip_cipher(link: str) -> bool:
     """检查 ss 链接的加密方式是否在不兼容列表中"""
-    _SS_SKIP_CIPHERS = ("chacha20-ietf", "aes-128-cfb", "chacha20-ietf-poly1305", "2022-blake3-aes-128-gcm")
+    _SS_SKIP_CIPHERS = ("chacha20-ietf", "aes-128-cfb", "aes-256-cfb", "chacha20-ietf-poly1305", "2022-blake3-aes-128-gcm")
     try:
         # 去掉 fragment
         line = link
         if "#" in line:
             line = line[:line.rindex("#")]
         ss_content = line[5:]  # 去掉 'ss://'
+        # 快速匹配：SS 2022 格式中 method 名可能直接出现在链接中
+        for skip_cipher in _SS_SKIP_CIPHERS:
+            if skip_cipher in ss_content:
+                return True
         cipher = ""
         if "@" in ss_content:
             # SIP002 格式: ss://base64(method:password)@address:port
             at_idx = ss_content.rindex("@")
             user_info_b64 = ss_content[:at_idx]
+            # URL 解码（SIP002 可能包含 %3A 等编码）
+            user_info_b64 = unquote(user_info_b64)
             padding = 4 - len(user_info_b64) % 4
             if padding != 4:
                 user_info_b64 += "=" * padding
@@ -801,8 +837,9 @@ async def get_instance_connected_nodes(
     ) as resp:
         data = await resp.json()
 
-    connected = data["data"]["touch"]["connectedServer"]
-    subscriptions = data["data"]["touch"]["subscriptions"]
+    touch = (data.get("data") or {}).get("touch") or {}
+    connected = touch.get("connectedServer") or []
+    subscriptions = touch.get("subscriptions") or []
 
     connected_nodes = []
     for conn in connected:
@@ -901,9 +938,9 @@ async def fetch_connected_proxies(
                 ) as sub_resp:
                     content = await sub_resp.text()
                 share_links = parse_subscription(content)
-                logger.info("订阅源 %d: 解析到 %d 个节点", sub_index, len(share_links))
+                logger.info("订阅源 #%d: 解析到 %d 个节点", sub_index + 1, len(share_links))
             except Exception as e:
-                logger.warning("订阅源 %d 加载失败: %s", sub_index, e)
+                logger.warning("订阅源 #%d 加载失败: %s", sub_index + 1, e)
                 continue
 
             # 该订阅源下的已连接节点

@@ -426,6 +426,9 @@
             <button class="btn btn-outline-success btn-sm" onclick="fetchInstanceSource({{ inst.id }})">
                 <i class="bi bi-cloud-download"></i> 获取此实例
             </button>
+            <button class="btn btn-outline-primary btn-sm" onclick="verifyInstanceSource({{ inst.id }})">
+                <i class="bi bi-arrow-repeat"></i> 验证此实例节点
+            </button>
             <button class="btn btn-outline-danger btn-sm" id="batch-del-inst-{{ inst.id }}" onclick="batchDeleteInst({{ inst.id }})" disabled>
                 <i class="bi bi-trash"></i> 批量删除
             </button>
@@ -1458,6 +1461,15 @@ async function fetchInstanceSource(id) {
         const data = await resp.json();
         if (resp.ok) { alert(data.message); setTimeout(refreshPage, 5000); }
         else { alert('获取失败: ' + (data.detail || '')); }
+    } catch (e) { alert('请求失败: ' + e.message); }
+}
+
+async function verifyInstanceSource(id) {
+    try {
+        const resp = await fetch('/api/verify-instance/' + id, { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) { alert(data.message); setTimeout(refreshPage, 5000); }
+        else { alert('验证失败: ' + (data.detail || '')); }
     } catch (e) { alert('请求失败: ' + e.message); }
 }
 

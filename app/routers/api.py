@@ -176,13 +176,26 @@ async def manual_verify_subscription(sub_id: int):
     return {"message": f"已触发订阅 #{sub_id} 的节点验证"}
 
 
+@router.post("/verify-instance/{inst_id}")
+async def manual_verify_instance(inst_id: int):
+    """手动触发验证指定实例源的已验证节点"""
+    db = get_db()
+    inst = await db.get_instance_source_by_id(inst_id)
+    if not inst:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="实例源不存在")
+    scheduler = get_scheduler()
+    asyncio.create_task(scheduler._verify_instance_verified(inst_id))
+    return {"message": f"已触发实例 #{inst_id} 的节点验证"}
+
+
 @router.get("/stats")
 async def get_stats():
     """获取统计信息"""
     db = get_db()
     scheduler = get_scheduler()
     config = get_config()
-    stats = await db.get_stats()
+    stats = await db.get_stats(config.check.latency_threshold)
     stats["last_fetch_time"] = scheduler.last_fetch_time
     stats["last_verify_time"] = scheduler.last_verify_time
     stats["max_proxies"] = config.scheduler.max_proxies
@@ -475,7 +488,7 @@ def _subscription_response(content: str, content_type: str):
         content=content,
         media_type=f"{content_type}; charset=utf-8",
         headers={
-            "Content-Disposition": 'attachment; filename="subscription"',
+            "Content-Disposition": 'attachment; filename="subscription.txt"',
             "Profile-Update-Interval": "24",
             "Profile-Title": "NetHub",
         },
