@@ -34,8 +34,7 @@ def generate_plain_subscription(proxies: list[ProxyDBRecord]) -> str:
             else:
                 link = link[:link.index(" ")]
         links.append(link)
-    return "
-".join(links)
+    return "\n".join(links)
 
 def _normalize_link(proxy: ProxyDBRecord) -> str:
     """规范化分享链接，确保 socks/http 代理带有 #host-port 名称"""
