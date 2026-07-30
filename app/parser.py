@@ -901,9 +901,9 @@ async def fetch_connected_proxies(
                 ) as sub_resp:
                     content = await sub_resp.text()
                 share_links = parse_subscription(content)
-                logger.info("订阅源 %d: 解析到 %d 个节点", sub_index, len(share_links))
+                logger.info("订阅源 #%d: 解析到 %d 个节点", sub_index + 1, len(share_links))
             except Exception as e:
-                logger.warning("订阅源 %d 加载失败: %s", sub_index, e)
+                logger.warning("订阅源 #%d 加载失败: %s", sub_index + 1, e)
                 continue
 
             # 该订阅源下的已连接节点
