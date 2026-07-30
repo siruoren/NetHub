@@ -25,20 +25,10 @@ class ProxyDBRecord:
     port: str
     link: str
     latency_ms: float  # 延迟毫秒，-1=未检测
-    fail_count: int  # 连续失败次数
     subscription_id: int  # 所属订阅源 ID
     last_check_time: str  # ISO8601
     last_success_time: str  # ISO8601
     created_at: str  # ISO8601
-
-    @property
-    def status(self) -> str:
-        """节点状态：available / unavailable / unchecked"""
-        if self.latency_ms < 0:
-            return "unchecked"
-        if self.fail_count > 0:
-            return "unavailable"
-        return "available"
 
 
 @dataclass

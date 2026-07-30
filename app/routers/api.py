@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api")
 
 @router.get("/proxies")
 async def get_available_proxies():
-    """获取所有可用节点列表（latency_ms > 0 且 fail_count=0）"""
+    """获取所有可用节点列表（latency_ms > 0 且延迟达标）"""
     db = get_db()
     config = get_config()
     proxies = await db.get_available_proxies(config.check.latency_threshold)
@@ -474,7 +474,6 @@ def _proxy_to_dict(proxy) -> dict:
         "address": proxy.address,
         "port": proxy.port,
         "latency_ms": proxy.latency_ms,
-        "fail_count": proxy.fail_count,
         "subscription_id": proxy.subscription_id,
         "created_at": proxy.created_at,
     }
