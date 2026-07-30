@@ -225,7 +225,7 @@ class TaskScheduler:
             if max_proxies > 0:
                 deleted = await self.db.enforce_max_proxies_with_verified(max_proxies)
                 if deleted:
-                    logger.info("超出全局订阅节点限制 %d，删除 %d 个延迟最高/入库最老的订阅节点", max_proxies, deleted)
+                    logger.info("超出全局订阅节点限制 %d，删除 %d 个入库最久/延迟最高的订阅节点", max_proxies, deleted)
 
         except Exception as e:
             await self.db.batch_update_subscription_meta(sub_id, fetch_status="failed")
@@ -550,7 +550,7 @@ class TaskScheduler:
             if max_instance_nodes > 0:
                 deleted = await self.db.enforce_max_all_verified_proxies(max_instance_nodes)
                 if deleted:
-                    logger.info("超出全局实例节点限制 %d，删除 %d 个延迟最高/入库最久的已验证节点",
+                    logger.info("超出全局实例节点限制 %d，删除 %d 个入库最久/延迟最高的已验证节点",
                                 max_instance_nodes, deleted)
 
             # 全局订阅节点限制（仅限制订阅入库节点总数，不涉及已验证库）
@@ -558,7 +558,7 @@ class TaskScheduler:
             if max_proxies > 0:
                 deleted = await self.db.enforce_max_proxies_with_verified(max_proxies)
                 if deleted:
-                    logger.info("超出全局订阅节点限制 %d，删除 %d 个延迟最高/入库最老的订阅节点", max_proxies, deleted)
+                    logger.info("超出全局订阅节点限制 %d，删除 %d 个入库最久/延迟最高的订阅节点", max_proxies, deleted)
 
             # 更新元信息：已入库数 = 已验证库中该实例下的总量
             verified_count = await self.db.get_verified_count_by_instance_id(source_id)

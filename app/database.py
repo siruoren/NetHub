@@ -428,7 +428,7 @@ class ProxyDatabase:
         return cursor.rowcount
 
     async def enforce_max_proxies(self, max_count: int) -> int:
-        """强制执行最大条目数限制，超出则优先删除延迟最大、历史最老的节点，返回删除数量"""
+        """强制执行最大条目数限制，超出则优先删除入库最久、延迟最高的节点，返回删除数量"""
         if max_count <= 0:
             return 0
         cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM proxies")
@@ -438,7 +438,7 @@ class ProxyDatabase:
         excess = total - max_count
         cursor = await self._db.execute(
             """DELETE FROM proxies WHERE id IN (
-                SELECT id FROM proxies ORDER BY latency_ms DESC, created_at ASC LIMIT ?
+                SELECT id FROM proxies ORDER BY created_at ASC, latency_ms DESC LIMIT ?
             )""",
             (excess,),
         )
@@ -449,7 +449,7 @@ class ProxyDatabase:
     async def enforce_max_proxies_with_verified(self, max_count: int) -> int:
         """全局订阅节点限制（仅限制订阅入库节点总数，不涉及已验证库）
 
-        超出则优先删除延迟最大、入库最老的订阅节点
+        超出则优先删除入库最久、延迟最高的订阅节点
         """
         if max_count <= 0:
             return 0
@@ -460,7 +460,7 @@ class ProxyDatabase:
         excess = total - max_count
         cursor = await self._db.execute(
             """DELETE FROM proxies WHERE id IN (
-                SELECT id FROM proxies ORDER BY latency_ms DESC, created_at ASC LIMIT ?
+                SELECT id FROM proxies ORDER BY created_at ASC, latency_ms DESC LIMIT ?
             )""",
             (excess,),
         )
@@ -1245,7 +1245,7 @@ class ProxyDatabase:
         return [self._row_to_instance_source(row) for row in rows]
 
     async def enforce_max_verified_proxies(self, instance_source_id: int, max_count: int) -> int:
-        """执行实例已验证节点入库限制，超出则优先删除延迟为-1的，再按延迟最高、入库最久删除，返回删除数量"""
+        """执行实例已验证节点入库限制，超出则优先删除延迟为-1的，再按入库最久、延迟最高删除，返回删除数量"""
         if max_count <= 0:
             return 0
         cursor = await self._db.execute(
@@ -1260,7 +1260,7 @@ class ProxyDatabase:
             """DELETE FROM verified_proxies WHERE id IN (
                 SELECT id FROM verified_proxies WHERE instance_source_id = ?
                 ORDER BY (CASE WHEN latency_ms = -1 THEN 0 ELSE 1 END),
-                         latency_ms DESC, created_at ASC LIMIT ?
+                         created_at ASC, latency_ms DESC LIMIT ?
             )""",
             (instance_source_id, excess),
         )
@@ -1269,7 +1269,7 @@ class ProxyDatabase:
         return cursor.rowcount
 
     async def enforce_max_all_verified_proxies(self, max_count: int) -> int:
-        """执行全局实例节点限制，超出则优先删除延迟为-1的，再按延迟最高+入库最久优先删除"""
+        """执行全局实例节点限制，超出则优先删除延迟为-1的，再按入库最久+延迟最高优先删除"""
         if max_count <= 0:
             return 0
         cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies")
@@ -1281,7 +1281,7 @@ class ProxyDatabase:
             """DELETE FROM verified_proxies WHERE id IN (
                 SELECT id FROM verified_proxies
                 ORDER BY (CASE WHEN latency_ms = -1 THEN 0 ELSE 1 END),
-                         latency_ms DESC, created_at ASC LIMIT ?
+                         created_at ASC, latency_ms DESC LIMIT ?
             )""",
             (excess,),
         )

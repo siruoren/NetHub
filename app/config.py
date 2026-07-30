@@ -35,7 +35,7 @@ class SchedulerConfig:
     fetch_interval: int = 3600  # 拉取订阅间隔（秒）
     verify_interval: int = 1800  # 验证节点间隔（秒）
     max_fail_count: int = 3  # 最大连续失败次数
-    max_proxies: int = 500  # 最大可用条目数，超出按入库时间删除最老的
+    max_proxies: int = 500  # 最大可用条目数，超出按入库时间最久+延迟最高优先删除
     max_instance_nodes: int = 0  # 所有实例已验证节点总数上限，0=不限制
 
 
