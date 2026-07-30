@@ -203,11 +203,17 @@ def _ss_has_skip_cipher(link: str) -> bool:
         if "#" in line:
             line = line[:line.rindex("#")]
         ss_content = line[5:]  # 去掉 'ss://'
+        # 快速匹配：SS 2022 格式中 method 名可能直接出现在链接中
+        for skip_cipher in _SS_SKIP_CIPHERS:
+            if skip_cipher in ss_content:
+                return True
         cipher = ""
         if "@" in ss_content:
             # SIP002 格式: ss://base64(method:password)@address:port
             at_idx = ss_content.rindex("@")
             user_info_b64 = ss_content[:at_idx]
+            # URL 解码（SIP002 可能包含 %3A 等编码）
+            user_info_b64 = unquote(user_info_b64)
             padding = 4 - len(user_info_b64) % 4
             if padding != 4:
                 user_info_b64 += "=" * padding
