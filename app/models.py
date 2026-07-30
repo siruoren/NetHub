@@ -25,20 +25,10 @@ class ProxyDBRecord:
     port: str
     link: str
     latency_ms: float  # 延迟毫秒，-1=未检测
-    fail_count: int  # 连续失败次数
     subscription_id: int  # 所属订阅源 ID
     last_check_time: str  # ISO8601
     last_success_time: str  # ISO8601
     created_at: str  # ISO8601
-
-    @property
-    def status(self) -> str:
-        """节点状态：available / unavailable / unchecked"""
-        if self.latency_ms < 0:
-            return "unchecked"
-        if self.fail_count > 0:
-            return "unavailable"
-        return "available"
 
 
 @dataclass
@@ -72,4 +62,3 @@ class InstanceSourceRecord:
     total_count: int  # 最新一次获取的节点总数（已验证库中该实例的节点数）
     fetch_status: str  # 拉取状态: idle / updating / success / failed
     connected_count: int  # 最新一次实例实际已连接的节点数
-    max_nodes: int  # 该实例最大已验证入库节点数，0=不限制

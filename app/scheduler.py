@@ -684,15 +684,6 @@ class TaskScheduler:
         except Exception as e:
             logger.error("实例源 #%d: 验证异常: %s", source_id, e, exc_info=True)
 
-    async def fetch_all_instance_sources(self) -> None:
-        """手动触发：获取所有启用的服务实例源的已连接节点数"""
-        sources = await self.db.get_enabled_instance_sources()
-        if not sources:
-            logger.warning("没有启用的服务实例源")
-            return
-        for source in sources:
-            await self._fetch_single_instance_source(source.id)
-
     async def import_instance_subscriptions(self, source_id: int) -> int:
         """手工导入服务实例中的订阅源到本地订阅源表
 

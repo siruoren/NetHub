@@ -47,7 +47,6 @@ class ProxyDatabase:
                 port             TEXT    NOT NULL DEFAULT '',
                 link             TEXT    NOT NULL,
                 latency_ms       REAL    DEFAULT -1,
-                fail_count       INTEGER DEFAULT 0,
                 subscription_id  INTEGER NOT NULL DEFAULT 0,
                 last_check_time  TEXT    DEFAULT '',
                 last_success_time TEXT   DEFAULT '',
@@ -60,7 +59,7 @@ class ProxyDatabase:
             CREATE INDEX IF NOT EXISTS idx_proxies_link ON proxies(link);
             CREATE INDEX IF NOT EXISTS idx_proxies_sub_id ON proxies(subscription_id);
             CREATE INDEX IF NOT EXISTS idx_proxies_sub_created ON proxies(subscription_id, created_at);
-            CREATE INDEX IF NOT EXISTS idx_proxies_available ON proxies(latency_ms, fail_count, subscription_id);
+            CREATE INDEX IF NOT EXISTS idx_proxies_available ON proxies(latency_ms, subscription_id);
 
             CREATE TABLE IF NOT EXISTS subscriptions (
                 id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,8 +72,7 @@ class ProxyDatabase:
                 created_at        TEXT    DEFAULT '',
                 empty_days        INTEGER DEFAULT 0,
                 total_count       INTEGER DEFAULT 0,
-                fetch_status      TEXT    DEFAULT 'idle',
-                max_nodes         INTEGER DEFAULT 0
+                fetch_status      TEXT    DEFAULT 'idle'
             );
 
             CREATE INDEX IF NOT EXISTS idx_subscriptions_url ON subscriptions(url);
@@ -96,8 +94,7 @@ class ProxyDatabase:
                 created_at        TEXT    DEFAULT '',
                 total_count       INTEGER DEFAULT 0,
                 fetch_status      TEXT    DEFAULT 'idle',
-                connected_count   INTEGER DEFAULT 0,
-                max_nodes         INTEGER DEFAULT 0
+                connected_count   INTEGER DEFAULT 0
             );
 
             CREATE INDEX IF NOT EXISTS idx_instance_sources_base_url ON instance_sources(base_url);
@@ -221,7 +218,6 @@ class ProxyDatabase:
                         port             TEXT    NOT NULL DEFAULT '',
                         link             TEXT    NOT NULL,
                         latency_ms       REAL    DEFAULT -1,
-                        fail_count       INTEGER DEFAULT 0,
                         subscription_id  INTEGER NOT NULL DEFAULT 0,
                         last_check_time  TEXT    DEFAULT '',
                         last_success_time TEXT   DEFAULT '',
@@ -229,7 +225,7 @@ class ProxyDatabase:
                         UNIQUE(protocol, address, port)
                     );
                     INSERT OR IGNORE INTO proxies_new
-                        SELECT id, protocol, name, address, port, link, latency_ms, fail_count,
+                        SELECT id, protocol, name, address, port, link, latency_ms,
                                subscription_id, last_check_time, last_success_time, created_at
                         FROM proxies;
                     DROP TABLE proxies;
@@ -242,7 +238,7 @@ class ProxyDatabase:
                 await self._db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_link ON proxies(link)")
                 await self._db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_sub_id ON proxies(subscription_id)")
                 await self._db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_sub_created ON proxies(subscription_id, created_at)")
-                await self._db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_available ON proxies(latency_ms, fail_count, subscription_id)")
+                await self._db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_available ON proxies(latency_ms, subscription_id)")
                 await self._db.commit()
         except Exception:
             pass
@@ -281,24 +277,12 @@ class ProxyDatabase:
             await self._db.commit()
         except Exception:
             pass
-        try:
-            await self._db.execute("ALTER TABLE subscriptions ADD COLUMN max_nodes INTEGER DEFAULT 0")
-            await self._db.commit()
-        except Exception:
-            pass
-
         # 迁移：为 instance_sources 表添加新列
         try:
             await self._db.execute("ALTER TABLE instance_sources ADD COLUMN connected_count INTEGER DEFAULT 0")
             await self._db.commit()
         except Exception:
             pass
-        try:
-            await self._db.execute("ALTER TABLE instance_sources ADD COLUMN max_nodes INTEGER DEFAULT 0")
-            await self._db.commit()
-        except Exception:
-            pass
-
     async def close(self) -> None:
         """关闭数据库连接"""
         if self._db:
@@ -315,30 +299,11 @@ class ProxyDatabase:
             port=row["port"],
             link=row["link"],
             latency_ms=row["latency_ms"],
-            fail_count=row["fail_count"],
             subscription_id=row["subscription_id"],
             last_check_time=row["last_check_time"],
             last_success_time=row["last_success_time"],
             created_at=row["created_at"],
         )
-
-    async def insert_proxy(self, proxy: ProxyInfo, latency_ms: float, subscription_id: int) -> bool:
-        """插入新节点，link 唯一约束，重复则忽略。返回是否插入成功"""
-        now = datetime.now(timezone(timedelta(hours=8))).isoformat()
-        try:
-            cursor = await self._db.execute(
-                """INSERT OR IGNORE INTO proxies
-                   (protocol, name, address, port, link, latency_ms, fail_count, subscription_id,
-                    last_check_time, last_success_time, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)""",
-                (proxy.protocol, proxy.name, proxy.address, proxy.port, proxy.link,
-                 latency_ms, subscription_id, now, now if latency_ms >= 0 else "", now),
-            )
-            await self._db.commit()
-            self._invalidate_stats()
-            return cursor.rowcount > 0
-        except aiosqlite.IntegrityError:
-            return False
 
     async def batch_insert_proxies(self, proxies: list[tuple[ProxyInfo, float, int]]) -> int:
         """批量插入新节点，link 唯一约束，重复则忽略。返回实际插入数量
@@ -354,9 +319,9 @@ class ProxyDatabase:
             try:
                 cursor = await self._db.execute(
                     """INSERT OR IGNORE INTO proxies
-                       (protocol, name, address, port, link, latency_ms, fail_count, subscription_id,
+                       (protocol, name, address, port, link, latency_ms, subscription_id,
                         last_check_time, last_success_time, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (proxy.protocol, proxy.name, proxy.address, proxy.port, proxy.link,
                      latency, sub_id, now, now if latency >= 0 else "", now),
                 )
@@ -368,21 +333,8 @@ class ProxyDatabase:
                 pass
         return inserted
 
-    async def update_latency(self, proxy_id: int, latency_ms: float) -> None:
-        """更新延迟并重置 fail_count"""
-        now = datetime.now(timezone(timedelta(hours=8))).isoformat()
-        await self._db.execute(
-            """UPDATE proxies
-               SET latency_ms = ?, fail_count = 0,
-                   last_check_time = ?, last_success_time = ?
-               WHERE id = ?""",
-            (latency_ms, now, now, proxy_id),
-        )
-        await self._db.commit()
-        self._invalidate_stats()
-
     async def batch_update_latency(self, updates: list[tuple[int, float]]) -> None:
-        """批量更新延迟并重置 fail_count
+        """批量更新延迟
 
         updates: [(proxy_id, latency_ms), ...]
         逐条 commit + invalidate_stats，前端可实时获取最新延迟统计
@@ -393,7 +345,7 @@ class ProxyDatabase:
         for pid, lat in updates:
             await self._db.execute(
                 """UPDATE proxies
-                   SET latency_ms = ?, fail_count = 0,
+                   SET latency_ms = ?,
                        last_check_time = ?, last_success_time = ?
                    WHERE id = ?""",
                 (lat, now, now, pid),
@@ -427,25 +379,6 @@ class ProxyDatabase:
         self._invalidate_stats()
         return cursor.rowcount
 
-    async def enforce_max_proxies(self, max_count: int) -> int:
-        """强制执行最大条目数限制，超出则优先删除入库最久、延迟最高的节点，返回删除数量"""
-        if max_count <= 0:
-            return 0
-        cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM proxies")
-        total = (await cursor.fetchone())["cnt"]
-        if total <= max_count:
-            return 0
-        excess = total - max_count
-        cursor = await self._db.execute(
-            """DELETE FROM proxies WHERE id IN (
-                SELECT id FROM proxies ORDER BY created_at ASC, latency_ms DESC LIMIT ?
-            )""",
-            (excess,),
-        )
-        await self._db.commit()
-        self._invalidate_stats()
-        return cursor.rowcount
-
     async def enforce_max_proxies_with_verified(self, max_count: int) -> int:
         """全局订阅节点限制（仅限制订阅入库节点总数，不涉及已验证库）
 
@@ -468,15 +401,6 @@ class ProxyDatabase:
         self._invalidate_stats()
         return cursor.rowcount
 
-    async def delete_proxies_by_subscription_id(self, subscription_id: int) -> int:
-        """删除指定订阅源 ID 下的所有节点，返回删除数量"""
-        cursor = await self._db.execute(
-            "DELETE FROM proxies WHERE subscription_id = ?", (subscription_id,)
-        )
-        await self._db.commit()
-        self._invalidate_stats()
-        return cursor.rowcount
-
     async def get_all_proxies(self) -> list[ProxyDBRecord]:
         """获取所有节点"""
         cursor = await self._db.execute(
@@ -486,10 +410,10 @@ class ProxyDatabase:
         return [self._row_to_record(row) for row in rows]
 
     async def get_available_proxies(self, max_latency: float) -> list[ProxyDBRecord]:
-        """获取延迟低于阈值且未失败的可用节点"""
+        """获取延迟低于阈值的可用节点"""
         cursor = await self._db.execute(
             """SELECT * FROM proxies
-               WHERE latency_ms > 0 AND latency_ms <= ? AND fail_count = 0
+               WHERE latency_ms > 0 AND latency_ms <= ?
                ORDER BY latency_ms ASC""",
             (max_latency,),
         )
@@ -508,50 +432,11 @@ class ProxyDatabase:
             port=row["port"],
             link=row["link"],
             latency_ms=row["latency_ms"],
-            fail_count=0,
             subscription_id=row["instance_source_id"],
             last_check_time="",
             last_success_time="",
             created_at=row["created_at"] or "",
         )
-
-    async def insert_verified_proxy(self, proxy: ProxyInfo, latency: float, instance_source_id: int) -> bool:
-        """插入单条已验证节点，已存在则忽略"""
-        now = datetime.now(timezone(timedelta(hours=8))).isoformat()
-        try:
-            await self._db.execute(
-                """INSERT OR IGNORE INTO verified_proxies
-                   (protocol, name, address, port, link, latency_ms, instance_source_id, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (proxy.protocol, proxy.name, proxy.address, proxy.port, proxy.link, latency, instance_source_id, now),
-            )
-            await self._db.commit()
-            return True
-        except Exception:
-            return False
-
-    async def batch_insert_verified_proxies(self, items: list[tuple[ProxyInfo, float, int]]) -> int:
-        """批量插入已验证节点，逐条 commit 实时刷新统计
-
-        返回实际插入数量（INSERT OR IGNORE 跳过重复 link 不计入）
-        """
-        now = datetime.now(timezone(timedelta(hours=8))).isoformat()
-        added = 0
-        for proxy, latency, instance_source_id in items:
-            try:
-                cursor = await self._db.execute(
-                    """INSERT OR IGNORE INTO verified_proxies
-                       (protocol, name, address, port, link, latency_ms, instance_source_id, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (proxy.protocol, proxy.name, proxy.address, proxy.port, proxy.link, latency, instance_source_id, now),
-                )
-                await self._db.commit()
-                if cursor.rowcount > 0:
-                    added += 1
-            except Exception:
-                pass
-        self._invalidate_stats()
-        return added
 
     async def sync_verified_proxies(
         self,
@@ -672,17 +557,6 @@ class ProxyDatabase:
         rows = await cursor.fetchall()
         return [self._row_to_verified_record(row) for row in rows]
 
-    async def get_verified_available_by_instance_id(self, instance_source_id: int, max_latency: float) -> list[ProxyDBRecord]:
-        """获取指定实例源下延迟达标的已验证节点（与订阅源可用节点过滤规则一致）"""
-        cursor = await self._db.execute(
-            """SELECT * FROM verified_proxies
-               WHERE instance_source_id = ? AND latency_ms > 0 AND latency_ms <= ?
-               ORDER BY latency_ms ASC""",
-            (instance_source_id, max_latency),
-        )
-        rows = await cursor.fetchall()
-        return [self._row_to_verified_record(row) for row in rows]
-
     async def get_all_verified_proxies(self, max_latency: float) -> list[ProxyDBRecord]:
         """获取所有延迟达标的已验证节点"""
         cursor = await self._db.execute(
@@ -720,13 +594,6 @@ class ProxyDatabase:
             )
             await self._db.commit()
 
-    async def clear_verified_proxies(self) -> int:
-        """清空已验证库"""
-        cursor = await self._db.execute("DELETE FROM verified_proxies")
-        await self._db.commit()
-        self._invalidate_stats()
-        return cursor.rowcount
-
     async def get_subscription_output_proxies(self, max_latency: float) -> list[ProxyDBRecord]:
         """获取对外订阅输出节点列表
 
@@ -737,7 +604,6 @@ class ProxyDatabase:
             """SELECT * FROM proxies
                WHERE latency_ms > 0
                  AND latency_ms <= ?
-                 AND fail_count = 0
                ORDER BY latency_ms ASC""",
             (max_latency,),
         )
@@ -777,14 +643,6 @@ class ProxyDatabase:
         output_proxies.sort(key=lambda x: x.latency_ms)
         return output_proxies
 
-    async def get_proxy_by_link(self, link: str) -> ProxyDBRecord | None:
-        """根据 link 查询节点"""
-        cursor = await self._db.execute(
-            "SELECT * FROM proxies WHERE link = ?", (link,)
-        )
-        row = await cursor.fetchone()
-        return self._row_to_record(row) if row else None
-
     async def get_proxies_by_keys(self, keys: list[tuple[str, str, str]]) -> dict[tuple[str, str, str], ProxyDBRecord]:
         """根据 (protocol, address, port) 批量查询订阅节点，返回 key→ProxyDBRecord 映射"""
         if not keys:
@@ -800,17 +658,6 @@ class ProxyDatabase:
                 result[(row["protocol"], row["address"], row["port"])] = self._row_to_record(row)
         return result
 
-    async def get_proxies_by_links(self, links: list[str]) -> dict[str, ProxyDBRecord]:
-        """根据 link 列表批量查询节点，返回 link→ProxyDBRecord 映射"""
-        if not links:
-            return {}
-        placeholders = ",".join("?" for _ in links)
-        cursor = await self._db.execute(
-            f"SELECT * FROM proxies WHERE link IN ({placeholders})", links
-        )
-        rows = await cursor.fetchall()
-        return {row["link"]: self._row_to_record(row) for row in rows}
-
     async def get_verified_keys_set(self, keys: list[tuple[str, str, str]]) -> set[tuple[str, str, str]]:
         """从已验证库中查找给定 (protocol, address, port) 中存在的 key 集合"""
         if not keys:
@@ -824,28 +671,6 @@ class ProxyDatabase:
             if await cursor.fetchone():
                 result.add((protocol, address, port))
         return result
-
-    async def get_verified_links_set(self, links: list[str]) -> set[str]:
-        """从已验证库中查找给定 link 列表中存在的 link，返回存在的 link 集合"""
-        if not links:
-            return set()
-        placeholders = ",".join("?" for _ in links)
-        cursor = await self._db.execute(
-            f"SELECT link FROM verified_proxies WHERE link IN ({placeholders})", links
-        )
-        rows = await cursor.fetchall()
-        return {row["link"] for row in rows}
-
-    async def get_proxy_links_set(self, links: list[str]) -> set[str]:
-        """从订阅节点库中查找给定 link 列表中存在的 link，返回存在的 link 集合"""
-        if not links:
-            return set()
-        placeholders = ",".join("?" for _ in links)
-        cursor = await self._db.execute(
-            f"SELECT link FROM proxies WHERE link IN ({placeholders})", links
-        )
-        rows = await cursor.fetchall()
-        return {row["link"] for row in rows}
 
     async def get_proxy_keys_set(self, keys: list[tuple[str, str, str]]) -> set[tuple[str, str, str]]:
         """从订阅节点库中查找给定 (protocol, address, port) 中存在的 key 集合"""
@@ -875,18 +700,6 @@ class ProxyDatabase:
             deleted += cursor.rowcount
         self._invalidate_stats()
         return deleted
-
-    async def delete_proxies_by_links(self, links: list[str]) -> int:
-        """根据 link 列表批量删除订阅节点库中的节点，返回删除数量"""
-        if not links:
-            return 0
-        placeholders = ",".join("?" for _ in links)
-        cursor = await self._db.execute(
-            f"DELETE FROM proxies WHERE link IN ({placeholders})", links
-        )
-        await self._db.commit()
-        self._invalidate_stats()
-        return cursor.rowcount
 
     async def delete_proxies_by_subscription_id_and_protocol(self, subscription_id: int, protocol: str) -> int:
         """删除指定订阅源下特定协议的所有节点，返回删除数量"""
@@ -1020,14 +833,6 @@ class ProxyDatabase:
         )
         await self._db.commit()
 
-    async def reset_empty_days(self, sub_id: int) -> None:
-        """订阅源有节点时重置空天数为0"""
-        await self._db.execute(
-            "UPDATE subscriptions SET empty_days = 0 WHERE id = ?",
-            (sub_id,),
-        )
-        await self._db.commit()
-
     async def batch_update_subscription_meta(self, sub_id: int,
                                               total_count: int = None,
                                               fetch_status: str = None,
@@ -1059,7 +864,7 @@ class ProxyDatabase:
         cursor = await self._db.execute(
             """SELECT id, protocol, name, address, port, link, latency_ms, subscription_id, created_at
                FROM proxies
-               WHERE latency_ms > 0 AND latency_ms <= ? AND fail_count = 0
+               WHERE latency_ms > 0 AND latency_ms <= ?
                ORDER BY subscription_id ASC, created_at ASC""",
             (max_latency,),
         )
@@ -1074,7 +879,6 @@ class ProxyDatabase:
                 port=row["port"],
                 link=row["link"],
                 latency_ms=row["latency_ms"],
-                fail_count=0,
                 subscription_id=row["subscription_id"],
                 last_check_time="",
                 last_success_time="",
@@ -1110,7 +914,7 @@ class ProxyDatabase:
                     COUNT(*) as available,
                     AVG(latency_ms) as avg_latency,
                     protocol
-                FROM proxies WHERE latency_ms > 0 AND latency_ms <= ? AND fail_count = 0
+                FROM proxies WHERE latency_ms > 0 AND latency_ms <= ?
                 GROUP BY protocol
             """, (max_latency,))
         else:
@@ -1147,15 +951,6 @@ class ProxyDatabase:
         }
         self._stats_dirty = False
         return self._stats_cache
-
-    async def get_last_check_time(self) -> str:
-        """获取最近一次检测时间"""
-        cursor = await self._db.execute(
-            """SELECT MAX(last_check_time) as latest FROM proxies
-               WHERE last_check_time != ''"""
-        )
-        row = await cursor.fetchone()
-        return row["latest"] or ""
 
     # ---- 检测目标 URL ----
 
@@ -1211,7 +1006,6 @@ class ProxyDatabase:
             total_count=row["total_count"] if "total_count" in row.keys() else 0,
             fetch_status=row["fetch_status"] if "fetch_status" in row.keys() else "idle",
             connected_count=row["connected_count"] if "connected_count" in row.keys() else 0,
-            max_nodes=row["max_nodes"] if "max_nodes" in row.keys() else 0,
         )
 
     async def add_instance_source(self, base_url: str, username: str, password: str,
@@ -1256,30 +1050,6 @@ class ProxyDatabase:
         cursor = await self._db.execute("SELECT * FROM instance_sources WHERE enabled = 1 ORDER BY id ASC")
         rows = await cursor.fetchall()
         return [self._row_to_instance_source(row) for row in rows]
-
-    async def enforce_max_verified_proxies(self, instance_source_id: int, max_count: int) -> int:
-        """执行实例已验证节点入库限制，超出则优先删除延迟为-1的，再按入库最久、延迟最高删除，返回删除数量"""
-        if max_count <= 0:
-            return 0
-        cursor = await self._db.execute(
-            "SELECT COUNT(*) as cnt FROM verified_proxies WHERE instance_source_id = ?",
-            (instance_source_id,),
-        )
-        total = (await cursor.fetchone())["cnt"]
-        if total <= max_count:
-            return 0
-        excess = total - max_count
-        cursor = await self._db.execute(
-            """DELETE FROM verified_proxies WHERE id IN (
-                SELECT id FROM verified_proxies WHERE instance_source_id = ?
-                ORDER BY (CASE WHEN latency_ms = -1 THEN 0 ELSE 1 END),
-                         created_at ASC, latency_ms DESC LIMIT ?
-            )""",
-            (instance_source_id, excess),
-        )
-        await self._db.commit()
-        self._invalidate_stats()
-        return cursor.rowcount
 
     async def enforce_max_all_verified_proxies(self, max_count: int) -> int:
         """执行全局实例节点限制，超出则优先删除延迟为-1的，再按入库最久+延迟最高优先删除"""
