@@ -17,16 +17,25 @@ def generate_plain_subscription(proxies: list[ProxyDBRecord]) -> str:
     """生成纯文本格式订阅内容（参照 subdom.txt 格式）
 
     每行一条原始代理 URI，socks/http 代理确保格式为 protocol://host:port#host-port
-    如果条目中包含空格，自动移除空格及空格后续的内容
+    vmess link 中 # 前的空格及空格后续内容会被移除，# 后的空格保留
     """
     links = []
     for p in proxies:
         link = _normalize_link(p)
-        # 移除空格及空格后续的内容（内核不支持含空格的链接）
-        if " " in link:
-            link = link[:link.index(" ")]
+        # 仅对 vmess 链接移除 # 前的空格及空格后续内容（内核不支持含空格的地址）
+        if link.startswith("vmess://") and " " in link:
+            hash_pos = link.find("#")
+            if hash_pos > 0:
+                before_hash = link[:hash_pos]
+                after_hash = link[hash_pos:]
+                if " " in before_hash:
+                    before_hash = before_hash[:before_hash.index(" ")]
+                link = before_hash + after_hash
+            else:
+                link = link[:link.index(" ")]
         links.append(link)
-    return "\n".join(links)
+    return "
+".join(links)
 
 def _normalize_link(proxy: ProxyDBRecord) -> str:
     """规范化分享链接，确保 socks/http 代理带有 #host-port 名称"""
