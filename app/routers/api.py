@@ -176,6 +176,19 @@ async def manual_verify_subscription(sub_id: int):
     return {"message": f"已触发订阅 #{sub_id} 的节点验证"}
 
 
+@router.post("/verify-instance/{inst_id}")
+async def manual_verify_instance(inst_id: int):
+    """手动触发验证指定实例源的已验证节点"""
+    db = get_db()
+    inst = await db.get_instance_source_by_id(inst_id)
+    if not inst:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="实例源不存在")
+    scheduler = get_scheduler()
+    asyncio.create_task(scheduler._verify_instance_verified(inst_id))
+    return {"message": f"已触发实例 #{inst_id} 的节点验证"}
+
+
 @router.get("/stats")
 async def get_stats():
     """获取统计信息"""
