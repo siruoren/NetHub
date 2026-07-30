@@ -831,8 +831,9 @@ async def get_instance_connected_nodes(
     ) as resp:
         data = await resp.json()
 
-    connected = data["data"]["touch"]["connectedServer"]
-    subscriptions = data["data"]["touch"]["subscriptions"]
+    touch = (data.get("data") or {}).get("touch") or {}
+    connected = touch.get("connectedServer") or []
+    subscriptions = touch.get("subscriptions") or []
 
     connected_nodes = []
     for conn in connected:
