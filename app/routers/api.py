@@ -195,7 +195,7 @@ async def get_stats():
     db = get_db()
     scheduler = get_scheduler()
     config = get_config()
-    stats = await db.get_stats()
+    stats = await db.get_stats(config.check.latency_threshold)
     stats["last_fetch_time"] = scheduler.last_fetch_time
     stats["last_verify_time"] = scheduler.last_verify_time
     stats["max_proxies"] = config.scheduler.max_proxies

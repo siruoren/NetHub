@@ -1087,15 +1087,15 @@ class ProxyDatabase:
         """标记统计缓存需要刷新"""
         self._stats_dirty = True
 
-    async def get_stats(self) -> dict:
+    async def get_stats(self, max_latency: float = 0) -> dict:
         """获取统计信息（带内存缓存）
 
         total: 订阅源数量
-        available: 可用节点数
+        available: 可用节点数（延迟达标且未失败）
         avg_latency_ms: 平均延迟
-        protocol_distribution: 协议分布
+        protocol_distribution: 协议分布（与可用节点过滤条件一致）
 
-        使用一条 SQL 合并查询，减少 4 次独立数据库操作为 2 次（subscriptions + proxies）
+        max_latency: 延迟阈值，>0 时按可用节点条件过滤；=0 时仅过滤 latency_ms > 0
         """
         if not self._stats_dirty and self._stats_cache is not None:
             return self._stats_cache
@@ -1103,21 +1103,34 @@ class ProxyDatabase:
         cursor = await self._db.execute("SELECT COUNT(*) as total FROM subscriptions")
         total = (await cursor.fetchone())["total"]
 
-        # 一条 SQL 同时获取可用数、平均延迟和协议分布
-        cursor = await self._db.execute("""
-            SELECT
-                COUNT(*) as available,
-                AVG(latency_ms) as avg_latency,
-                protocol
-            FROM proxies WHERE latency_ms > 0
-            GROUP BY protocol
-        """)
+        # 一条 SQL 同时获取可用数、平均延迟和协议分布（与 get_available_proxies 过滤条件一致）
+        if max_latency > 0:
+            cursor = await self._db.execute("""
+                SELECT
+                    COUNT(*) as available,
+                    AVG(latency_ms) as avg_latency,
+                    protocol
+                FROM proxies WHERE latency_ms > 0 AND latency_ms <= ? AND fail_count = 0
+                GROUP BY protocol
+            """, (max_latency,))
+        else:
+            cursor = await self._db.execute("""
+                SELECT
+                    COUNT(*) as available,
+                    AVG(latency_ms) as avg_latency,
+                    protocol
+                FROM proxies WHERE latency_ms > 0
+                GROUP BY protocol
+            """)
         rows = await cursor.fetchall()
         available = sum(row["available"] for row in rows)
         avg_latency = sum(row["available"] * (row["avg_latency"] or 0) for row in rows) / available if available > 0 else 0
         protocol_dist = {row["protocol"]: row["available"] for row in rows}
 
-        v_cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies WHERE latency_ms > 0")
+        if max_latency > 0:
+            v_cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies WHERE latency_ms > 0 AND latency_ms <= ?", (max_latency,))
+        else:
+            v_cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies WHERE latency_ms > 0")
         v_available = (await v_cursor.fetchone())["cnt"]
 
         # Total instance nodes (all verified nodes regardless of latency)

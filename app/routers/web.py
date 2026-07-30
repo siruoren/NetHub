@@ -25,7 +25,7 @@ async def index(request: Request):
 
     # 并行查询（移除 get_all_proxies，页面只使用 grouped 数据）
     results = await asyncio.gather(
-        db.get_stats(),
+        db.get_stats(config.check.latency_threshold),
         db.get_all_subscriptions(),
         db.get_proxies_grouped_by_subscription(config.check.latency_threshold),
         db.get_check_urls(),
