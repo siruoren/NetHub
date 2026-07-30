@@ -17,10 +17,16 @@ def generate_plain_subscription(proxies: list[ProxyDBRecord]) -> str:
     """生成纯文本格式订阅内容（参照 subdom.txt 格式）
 
     每行一条原始代理 URI，socks/http 代理确保格式为 protocol://host:port#host-port
+    如果条目中包含空格，自动移除空格及空格后续的内容
     """
-    links = [_normalize_link(p) for p in proxies]
+    links = []
+    for p in proxies:
+        link = _normalize_link(p)
+        # 移除空格及空格后续的内容（内核不支持含空格的链接）
+        if " " in link:
+            link = link[:link.index(" ")]
+        links.append(link)
     return "\n".join(links)
-
 
 def _normalize_link(proxy: ProxyDBRecord) -> str:
     """规范化分享链接，确保 socks/http 代理带有 #host-port 名称"""

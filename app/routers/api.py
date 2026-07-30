@@ -488,7 +488,7 @@ def _subscription_response(content: str, content_type: str):
         content=content,
         media_type=f"{content_type}; charset=utf-8",
         headers={
-            "Content-Disposition": 'attachment; filename="subscription"',
+            "Content-Disposition": 'attachment; filename="subscription.txt"',
             "Profile-Update-Interval": "24",
             "Profile-Title": "NetHub",
         },
