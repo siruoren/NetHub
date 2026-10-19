@@ -1,0 +1,11 @@
+# Ruff 配置
+target-version = "py311"
+
+[lint.per-file-ignores]
+# 以下模块大量处理不可信输入（分享链接/订阅内容/协议转换）及最佳努力资源清理，
+# 宽泛的兜底异常捕获是有意设计：一条畸形数据不应中断整体解析，清理失败静默跳过属预期行为
+"app/checker.py" = ["BLE001", "S110", "S112"]
+"app/parser.py" = ["BLE001", "S110"]
+"app/generator.py" = ["BLE001", "S110"]
+# 定时任务调度：单个任务注册/执行失败需要与调度器隔离，异常均已记录日志
+"app/scheduler.py" = ["BLE001"]
