@@ -460,11 +460,12 @@ class TaskScheduler:
         流程：
         1. 登录实例获取已连接节点和订阅地址列表
         2. 保存已连接数（connected_count）到数据库
-        3. 全量同步：以 link（完整配置 URI）为节点身份
-           - link 已存在 → 跳过
-           - link 不存在 → INSERT 新配置（全量入库，同一服务器端口的多个配置
-             各自入库，不做网络检测，不做跨实例/订阅去重）
-           - 已有节点保留（不在当前已连接中也保留）
+        3. 精准同步：基于实例节点身份(instance_node_name+address)对比已验证库
+           - 身份已存在且 link 相同 → 跳过
+           - 身份已存在但 link 变化 → UPDATE link 及字段
+           - 身份不存在 → INSERT 新节点（全量入库，即使与订阅节点或其他实例
+             的节点重复也入库，不做网络检测，对外订阅输出时统一去重）
+           - 已有但不在当前已连接中 → 保留（不删除）
            - 实例上报 0 个已连接节点 → 保留已入库节点（仅告警，不清理）
         4. 全局实例节点限制检查（超过上限自动清理入库时间最早的节点）
         5. 全局订阅节点限制检查（仅限制订阅入库节点总数）
@@ -511,8 +512,8 @@ class TaskScheduler:
                     (proxy, inst_name, inst_addr, source_id)
                     for proxy, inst_name, inst_addr in proxies
                 ]
-                added, _, _, _ = await self.db.sync_verified_proxies(sync_items)
-                logger.info("实例源 #%d: 同步完成 - 新增 %d（以 link 为身份全量入库）", source.id, added)
+                added, updated, _, _ = await self.db.sync_verified_proxies(sync_items)
+                logger.info("实例源 #%d: 同步完成 - 新增 %d, 更新 %d", source.id, added, updated)
             else:
                 # 实例上报 0 个已连接节点：保留已入库节点（断开节点保留规则），
                 # 不做清理，避免实例 API 瞬时异常导致节点被误删
