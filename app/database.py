@@ -461,7 +461,8 @@ class ProxyDatabase:
            - 协议+地址+端口已存在于本实例但 link 变化 → UPDATE link 及其他字段
            - 协议+地址+端口不存在于本实例，但存在于其他实例 → 不入库（全局去重）
            - 协议+地址+端口全局不存在 → INSERT
-        4. 不在当前已连接列表中的节点保留不清理
+        4. 本实例已有但不在当前已连接列表中的节点保留（不清理），
+           节点总量超过上限时由全局限制按入库时间最早自动清理
         """
         if not items:
             return 0, 0, 0, []
@@ -501,11 +502,9 @@ class ProxyDatabase:
         updated = 0
         skipped_duplicate = 0
         new_links: list[str] = []
-        matched_keys: set[tuple[str, str, str]] = set()
 
         for proxy, inst_name, inst_addr, _source_id in items:
             key = (proxy.protocol, proxy.address, proxy.port)
-            matched_keys.add(key)
             existing = existing_map.get(key)
 
             if existing:
@@ -1060,7 +1059,7 @@ class ProxyDatabase:
         return [self._row_to_instance_source(row) for row in rows]
 
     async def enforce_max_all_verified_proxies(self, max_count: int) -> int:
-        """执行全局实例节点限制，超出则优先删除延迟为-1的，再按入库最久+延迟最高优先删除"""
+        """执行全局实例节点限制，超出则自动清理入库时间最早的节点"""
         if max_count <= 0:
             return 0
         cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies")
@@ -1071,8 +1070,7 @@ class ProxyDatabase:
         cursor = await self._db.execute(
             """DELETE FROM verified_proxies WHERE id IN (
                 SELECT id FROM verified_proxies
-                ORDER BY (CASE WHEN latency_ms = -1 THEN 0 ELSE 1 END),
-                         created_at ASC, latency_ms DESC LIMIT ?
+                ORDER BY created_at ASC, id ASC LIMIT ?
             )""",
             (excess,),
         )
