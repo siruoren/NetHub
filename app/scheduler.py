@@ -463,7 +463,8 @@ class TaskScheduler:
         3. 精准同步：基于实例节点身份(instance_node_name+address)对比已验证库
            - 身份已存在且 link 相同 → 跳过
            - 身份已存在但 link 变化 → UPDATE link 及字段
-           - 身份不存在 → INSERT 新节点（直接入库，不做网络检测）
+           - 身份不存在 → INSERT 新节点（全量入库，即使与订阅节点或其他实例
+             的节点重复也入库，不做网络检测，对外订阅输出时统一去重）
            - 已有但不在当前已连接中 → 保留（不删除）
         4. 全局实例节点限制检查（超过上限自动清理入库时间最早的节点）
         5. 全局订阅节点限制检查（仅限制订阅入库节点总数）
@@ -505,21 +506,13 @@ class TaskScheduler:
             await self.db.batch_update_instance_meta(source_id, connected_count=connected_count)
 
             if connected_count > 0:
-                # 检查这些节点是否在订阅节点库中存在（以协议+地址+端口去重），如果存在则从订阅库删除
-                proxy_keys = [(p[0].protocol, p[0].address, p[0].port) for p in proxies]
-                existing_in_proxies = await self.db.get_proxy_keys_set(proxy_keys)
-                if existing_in_proxies:
-                    deleted_from_proxies = await self.db.delete_proxies_by_keys(list(existing_in_proxies))
-                    logger.info("实例源 #%d: 从订阅节点库中移除 %d 个重复节点", source.id, deleted_from_proxies)
-
-                # 基于实例节点身份精准同步：新增/更新/删除（新增节点直接入库，不做网络检测）
+                # 实例节点全量入库：与订阅节点/其他实例的节点重复也入库，对外订阅输出时统一去重
                 sync_items = [
                     (proxy, inst_name, inst_addr, source_id)
                     for proxy, inst_name, inst_addr in proxies
                 ]
-                added, updated, deleted_sync, _ = await self.db.sync_verified_proxies(sync_items)
-                logger.info("实例源 #%d: 同步完成 - 新增 %d, 更新 %d, 删除断开 %d",
-                            source.id, added, updated, deleted_sync)
+                added, updated, _, _ = await self.db.sync_verified_proxies(sync_items)
+                logger.info("实例源 #%d: 同步完成 - 新增 %d, 更新 %d", source.id, added, updated)
             else:
                 # 无已连接节点，清空该实例的已验证记录
                 await self.db.delete_verified_by_instance_id(source_id)
@@ -529,7 +522,7 @@ class TaskScheduler:
             if max_instance_nodes > 0:
                 deleted = await self.db.enforce_max_all_verified_proxies(max_instance_nodes)
                 if deleted:
-                    logger.info("超出全局实例节点限制 %d，删除 %d 个入库最久/延迟最高的已验证节点",
+                    logger.info("超出全局实例节点限制 %d，删除 %d 个入库时间最早的已验证节点",
                                 max_instance_nodes, deleted)
 
             # 全局订阅节点限制（仅限制订阅入库节点总数，不涉及已验证库）
