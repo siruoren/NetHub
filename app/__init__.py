@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """应用工厂 - 创建 FastAPI 实例并整合各模块"""
 
 import logging
@@ -7,7 +8,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.templating import Jinja2Templates
 
-from app.checker import ProxyChecker, DEFAULT_CHECK_URLS
+from app.checker import DEFAULT_CHECK_URLS, ProxyChecker
 from app.config import AppConfig, load_config
 from app.database import ProxyDatabase
 from app.scheduler import TaskScheduler
@@ -44,7 +45,7 @@ def get_templates() -> Jinja2Templates:
 
 def create_app(config_path: str = "config.yaml") -> FastAPI:
     """创建 FastAPI 应用实例"""
-    global _config, _db, _checker, _scheduler, _templates
+    global _config, _db, _templates
 
     # 加载配置
     _config = load_config(config_path)

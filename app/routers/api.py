@@ -2,13 +2,16 @@
 
 import asyncio
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app import get_checker, get_config, get_db, get_scheduler
-from app.generator import generate_clash_subscription, generate_plain_subscription, generate_v2ray_subscription
+from app.generator import (
+    generate_clash_subscription,
+    generate_plain_subscription,
+    generate_v2ray_subscription,
+)
 from app.parser import filter_invalid_proxies, get_transport_type
 
 logger = logging.getLogger(__name__)
@@ -313,10 +316,10 @@ async def add_subscription(url: str = "", crontab: str = "0 * * * *",
 class AutoSubRequest(BaseModel):
     """自动添加订阅请求体"""
     url: str
-    crontab: Optional[str] = None
-    latency_threshold: Optional[float] = None
-    max_retries: Optional[int] = None
-    max_concurrent: Optional[int] = None
+    crontab: str | None = None
+    latency_threshold: float | None = None
+    max_retries: int | None = None
+    max_concurrent: int | None = None
 
 
 @router.post("/subscriptions/auto")
@@ -357,12 +360,12 @@ async def auto_add_subscription(req: AutoSubRequest):
 
 
 @router.put("/subscriptions/{sub_id}")
-async def update_subscription(sub_id: int, url: Optional[str] = None,
-                               crontab: Optional[str] = None,
-                               latency_threshold: Optional[float] = None,
-                               max_retries: Optional[int] = None,
-                               max_concurrent: Optional[int] = None,
-                               enabled: Optional[bool] = None):
+async def update_subscription(sub_id: int, url: str | None = None,
+                               crontab: str | None = None,
+                               latency_threshold: float | None = None,
+                               max_retries: int | None = None,
+                               max_concurrent: int | None = None,
+                               enabled: bool | None = None):
     """更新订阅源"""
     from fastapi import HTTPException
     db = get_db()
@@ -419,7 +422,6 @@ async def delete_subscription(sub_id: int):
 async def get_proxies_grouped():
     """获取按订阅来源分组的所有可用节点（含延迟-1待检测）"""
     db = get_db()
-    instance_sources = await db.get_all_instance_sources()
     subscriptions = await db.get_all_subscriptions()
     subscriptions = [s for s in subscriptions if "nethub" not in s.url.lower()]
     result = {}
@@ -571,9 +573,9 @@ class InstanceSourceCreate(BaseModel):
     base_url: str
     username: str
     password: str
-    crontab: Optional[str] = "*/10 * * * *"
-    latency_threshold: Optional[float] = 1500.0
-    max_concurrent: Optional[int] = 50
+    crontab: str | None = "*/10 * * * *"
+    latency_threshold: float | None = 1500.0
+    max_concurrent: int | None = 50
 
 
 @router.post("/instance-sources")
@@ -603,13 +605,13 @@ async def add_instance_source(req: InstanceSourceCreate):
 
 
 @router.put("/instance-sources/{source_id}")
-async def update_instance_source(source_id: int, base_url: Optional[str] = None,
-                                  username: Optional[str] = None,
-                                  password: Optional[str] = None,
-                                  crontab: Optional[str] = None,
-                                  latency_threshold: Optional[float] = None,
-                                  max_concurrent: Optional[int] = None,
-                                  enabled: Optional[bool] = None):
+async def update_instance_source(source_id: int, base_url: str | None = None,
+                                  username: str | None = None,
+                                  password: str | None = None,
+                                  crontab: str | None = None,
+                                  latency_threshold: float | None = None,
+                                  max_concurrent: int | None = None,
+                                  enabled: bool | None = None):
     """更新服务实例源"""
     from fastapi import HTTPException
     db = get_db()
@@ -741,9 +743,10 @@ async def export_config():
         ],
     }
 
-    from fastapi.responses import Response
-    from datetime import datetime, timedelta, timezone
     import json
+    from datetime import datetime, timedelta, timezone
+
+    from fastapi.responses import Response
     content = json.dumps(config, ensure_ascii=False, indent=2)
     ts = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d_%H%M%S")
     return Response(

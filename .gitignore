@@ -27,3 +27,4 @@ resources/Subscription.txt
 .env
 logs/**
 logs/proxy_pool.log
+ruff.toml

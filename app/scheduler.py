@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """定时任务调度模块 - 使用 APScheduler 管理拉取/验证/清理任务，支持 crontab 配置"""
 
 import asyncio
@@ -13,7 +14,7 @@ from apscheduler.triggers.cron import CronTrigger
 from app.checker import ProxyChecker
 from app.config import AppConfig
 from app.database import ProxyDatabase
-from app.parser import fetch_subscription, parse_subscription, fetch_connected_proxies
+from app.parser import fetch_connected_proxies, fetch_subscription, parse_subscription
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +37,6 @@ class TaskScheduler:
 
     def start(self) -> None:
         """注册默认定时任务并启动调度器"""
-        cfg = self.config.scheduler
-
         self.scheduler.start()
         logger.info("调度器已启动")
 
@@ -232,7 +231,7 @@ class TaskScheduler:
             if isinstance(e, (asyncio.TimeoutError, TimeoutError, aiohttp.ClientError)):
                 logger.warning("拉取订阅 #%d 失败: %s", sub.id, e)
             else:
-                logger.error("拉取订阅 #%d 异常: %s", sub.id, e, exc_info=True)
+                logger.exception("拉取订阅 #%d 异常", sub.id)
 
     async def fetch_and_check(self) -> None:
         """手动触发：订阅源和实例源分别使用独立队列并发拉取
@@ -305,8 +304,8 @@ class TaskScheduler:
             if subs:
                 logger.info("开始验证所有已入库节点可用性...")
                 await self.verify_stored_proxies()
-        except Exception as e:
-            logger.error("拉取任务异常: %s", e, exc_info=True)
+        except Exception:
+            logger.exception("拉取任务异常")
         finally:
             self._fetching = False
 
@@ -332,7 +331,7 @@ class TaskScheduler:
 
                 all_links = []
                 link_to_proxy = {}  # link → ProxyDBRecord
-                for sub_id, proxies in grouped.items():
+                for proxies in grouped.values():
                     for proxy in proxies:
                         all_links.append(proxy.link)
                         link_to_proxy[proxy.link] = proxy
@@ -360,8 +359,8 @@ class TaskScheduler:
                 logger.info("数据库中没有订阅节点，跳过验证")
 
             self._last_verify_time = datetime.now(timezone(timedelta(hours=8))).isoformat()
-        except Exception as e:
-            logger.error("验证任务异常: %s", e, exc_info=True)
+        except Exception:
+            logger.exception("验证任务异常")
         finally:
             self._verifying = False
 
@@ -408,8 +407,8 @@ class TaskScheduler:
 
             self._last_verify_time = datetime.now(timezone(timedelta(hours=8))).isoformat()
             logger.info("订阅 #%d 验证完成: 成功 %d, 删除 %d", sub_id, len(latency_updates), len(delete_ids))
-        except Exception as e:
-            logger.error("订阅 #%d 验证异常: %s", sub_id, e, exc_info=True)
+        except Exception:
+            logger.exception("订阅 #%d 验证异常", sub_id)
         finally:
             self._verifying_subs.discard(sub_id)
 
@@ -491,7 +490,7 @@ class TaskScheduler:
                     ),
                     timeout=300.0  # 5 minutes total timeout
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.error("实例源 #%d: 获取超时（5分钟），可能网络或服务实例响应慢", source.id)
                 await self.db.batch_update_instance_meta(source_id, fetch_status="failed")
                 return
@@ -549,8 +548,8 @@ class TaskScheduler:
             )
 
             self._last_fetch_time = datetime.now(timezone(timedelta(hours=8))).isoformat()
-        except Exception as e:
-            logger.error("实例源 #%d: 获取过程异常: %s", source_id, e, exc_info=True)
+        except Exception:
+            logger.exception("实例源 #%d: 获取过程异常", source_id)
             await self.db.batch_update_instance_meta(source_id, fetch_status="failed")
         finally:
             self._fetching_instances.discard(source_id)
@@ -608,8 +607,8 @@ class TaskScheduler:
                 await self.db.batch_delete_verified(delete_ids)
             logger.info("实例源 #%d: 验证完成 - 成功 %d, 删除 %d",
                         source_id, len(latency_updates), len(delete_ids))
-        except Exception as e:
-            logger.error("实例源 #%d: 验证异常: %s", source_id, e, exc_info=True)
+        except Exception:
+            logger.exception("实例源 #%d: 验证异常", source_id)
 
     async def import_instance_subscriptions(self, source_id: int) -> int:
         """手工导入服务实例中的订阅源到本地订阅源表

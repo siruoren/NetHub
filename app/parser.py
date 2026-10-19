@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """订阅解析模块 - 拉取和解析节点订阅链接
 
 核心解析逻辑移植自 Proxy_List/get_connected_proxies/get_connected_proxies.py
@@ -6,12 +7,11 @@ from __future__ import annotations
 支持 Clash YAML 格式订阅解析
 """
 
-import asyncio
 import base64
 import difflib
 import json
 import logging
-from urllib.parse import urlparse, unquote, parse_qs
+from urllib.parse import parse_qs, unquote, urlparse
 
 import aiohttp
 import yaml
@@ -26,11 +26,10 @@ async def fetch_subscription(url: str, timeout: float = 60.0) -> str:
     try:
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=timeout),
-        ) as session:
-            async with session.get(url) as resp:
-                resp.raise_for_status()
-                return await resp.text()
-    except (asyncio.TimeoutError, TimeoutError) as e:
+        ) as session, session.get(url) as resp:
+            resp.raise_for_status()
+            return await resp.text()
+    except TimeoutError:
         logger.warning("拉取订阅超时 (%ss): %s", timeout, url[:80])
         raise
     except aiohttp.ClientError as e:
@@ -86,7 +85,7 @@ def parse_subscription(content: str) -> list[ProxyInfo]:
             continue
 
         # 跳过注释行和常见非协议行
-        if line.startswith("#") or line.startswith("//"):
+        if line.startswith(("#", "//")):
             continue
 
         info = _try_parse_line(line)
@@ -167,7 +166,7 @@ def filter_invalid_proxies(proxies) -> list:
 def _trojan_has_special_chars(link: str) -> bool:
     """检查 trojan 链接的密码是否包含特殊字符（内核不支持）"""
     try:
-        from urllib.parse import urlparse, unquote
+        from urllib.parse import unquote, urlparse
         parsed = urlparse(link)
         if parsed.username:
             password = unquote(parsed.username)
@@ -327,7 +326,7 @@ def _parse_line(line: str) -> ProxyInfo | None:
         return _parse_trojan(line)
     elif line.startswith("ss://"):
         return _parse_ss(line)
-    elif line.startswith("hysteria2://") or line.startswith("hy2://"):
+    elif line.startswith(("hysteria2://", "hy2://")):
         return _parse_hysteria2(line)
     elif line.startswith(("socks5://", "socks4://", "socks4a://")):
         return _parse_socks(line)
@@ -414,7 +413,6 @@ def _clash_proxy_to_info(proxy: dict) -> ProxyInfo | None:
 def _clash_to_vmess_link(proxy: dict, name: str, server: str, port: str) -> str | None:
     """Clash vmess → vmess:// 链接"""
     try:
-        import uuid
         config = {
             "v": "2",
             "ps": name,
@@ -493,9 +491,8 @@ def _clash_to_vless_link(proxy: dict, name: str, server: str, port: str) -> str 
                 params.append(f"host={hosts[0]}")
         # grpc-opts
         grpc_opts = proxy.get("grpc-opts", {})
-        if network == "grpc" and grpc_opts:
-            if grpc_opts.get("grpc-service-name"):
-                params.append(f"serviceName={grpc_opts['grpc-service-name']}")
+        if network == "grpc" and grpc_opts and grpc_opts.get("grpc-service-name"):
+            params.append(f"serviceName={grpc_opts['grpc-service-name']}")
 
         fragment = _quote(name)
         query = "&".join(params)
@@ -526,9 +523,8 @@ def _clash_to_trojan_link(proxy: dict, name: str, server: str, port: str) -> str
                 params.append(f"host={ws_opts['headers']['host']}")
         # grpc-opts
         grpc_opts = proxy.get("grpc-opts", {})
-        if network == "grpc" and grpc_opts:
-            if grpc_opts.get("grpc-service-name"):
-                params.append(f"serviceName={grpc_opts['grpc-service-name']}")
+        if network == "grpc" and grpc_opts and grpc_opts.get("grpc-service-name"):
+            params.append(f"serviceName={grpc_opts['grpc-service-name']}")
 
         fragment = _quote(name)
         query = "&".join(params)
@@ -812,7 +808,7 @@ async def instance_login(base_url: str, username: str, password: str,
             data = await resp.json()
             if data.get("code") != "SUCCESS":
                 await session.close()
-                raise Exception(f"登录失败: {data}")
+                raise RuntimeError(f"登录失败: {data}")
             token = data["data"]["token"]
             headers["Authorization"] = token
             return session, headers

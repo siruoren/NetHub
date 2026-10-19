@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """节点连通性检测模块 - 通过启动本地内核实例转发流量检测延迟
 
 检测策略（优先级从高到低）：
@@ -15,17 +16,17 @@ from __future__ import annotations
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
+import shutil
 import socket
 import ssl
 import tempfile
 import time
-import base64
-import shutil
 from dataclasses import dataclass
-from urllib.parse import urlparse, unquote, parse_qs
+from urllib.parse import parse_qs, unquote, urlparse
 
 import aiohttp
 
@@ -323,7 +324,7 @@ class ProxyChecker:
                 return ProxyChecker._trojan_to_xray(link)
             elif link.startswith("ss://"):
                 return ProxyChecker._ss_to_xray(link)
-            elif link.startswith("hysteria2://") or link.startswith("hy2://"):
+            elif link.startswith(("hysteria2://", "hy2://")):
                 return ProxyChecker._hysteria2_to_xray(link)
             elif link.startswith("socks5://"):
                 return ProxyChecker._socks_to_xray(link)
@@ -541,7 +542,6 @@ class ProxyChecker:
             }
 
             network = query.get("type", ["tcp"])[0]
-            security = query.get("security", ["tls"])[0]
             stream = {"network": network, "security": "tls"}
 
             tls_settings = {}
@@ -762,7 +762,7 @@ class ProxyChecker:
                 ctx = ssl.create_default_context()
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
-                reader, writer = await asyncio.wait_for(
+                _, writer = await asyncio.wait_for(
                     asyncio.open_connection(
                         host, info.port, ssl=ctx, server_hostname=info.host
                     ),
@@ -774,7 +774,7 @@ class ProxyChecker:
                     writer.close()
                     return None
             else:
-                reader, writer = await asyncio.wait_for(
+                _, writer = await asyncio.wait_for(
                     asyncio.open_connection(host, info.port),
                     timeout=self.timeout,
                 )
@@ -801,12 +801,12 @@ class ProxyChecker:
         try:
             socket.inet_pton(socket.AF_INET, host)
             return True
-        except (OSError, socket.error):
+        except OSError:
             pass
         try:
             socket.inet_pton(socket.AF_INET6, host)
             return True
-        except (OSError, socket.error):
+        except OSError:
             pass
         return False
 
@@ -855,7 +855,7 @@ class ProxyChecker:
                 return self._parse_trojan(link)
             elif link.startswith("ss://"):
                 return self._parse_ss(link)
-            elif link.startswith("hysteria2://") or link.startswith("hy2://"):
+            elif link.startswith(("hysteria2://", "hy2://")):
                 return self._parse_hysteria2(link)
             elif link.startswith("socks5://"):
                 return self._parse_socks(link)

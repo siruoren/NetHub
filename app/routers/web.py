@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """Web UI 页面路由 - Jinja2 模板渲染"""
 
 import asyncio

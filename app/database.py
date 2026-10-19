@@ -1,14 +1,19 @@
 from __future__ import annotations
+
 """数据库操作层 - aiosqlite 异步封装"""
 
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 
-import logging
-
 import aiosqlite
 
-from app.models import ProxyDBRecord, ProxyInfo, SubscriptionRecord, InstanceSourceRecord
+from app.models import (
+    InstanceSourceRecord,
+    ProxyDBRecord,
+    ProxyInfo,
+    SubscriptionRecord,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -731,6 +736,7 @@ class ProxyDatabase:
 
     def _row_to_subscription(self, row: aiosqlite.Row) -> SubscriptionRecord:
         """将数据库行转为 SubscriptionRecord"""
+        cols = row.keys()  # sqlite3.Row 仅支持通过 keys() 判断列名是否存在
         return SubscriptionRecord(
             id=row["id"],
             url=row["url"],
@@ -740,9 +746,9 @@ class ProxyDatabase:
             max_concurrent=row["max_concurrent"],
             enabled=bool(row["enabled"]),
             created_at=row["created_at"],
-            empty_days=row["empty_days"] if "empty_days" in row.keys() else 0,
-            total_count=row["total_count"] if "total_count" in row.keys() else 0,
-            fetch_status=row["fetch_status"] if "fetch_status" in row.keys() else "idle",
+            empty_days=row["empty_days"] if "empty_days" in cols else 0,
+            total_count=row["total_count"] if "total_count" in cols else 0,
+            fetch_status=row["fetch_status"] if "fetch_status" in cols else "idle",
         )
 
     # ---- 订阅管理 ----
@@ -834,8 +840,8 @@ class ProxyDatabase:
         await self._db.commit()
 
     async def batch_update_subscription_meta(self, sub_id: int,
-                                              total_count: int = None,
-                                              fetch_status: str = None,
+                                              total_count: int | None = None,
+                                              fetch_status: str | None = None,
                                               reset_empty: bool = False) -> None:
         """批量更新订阅源元信息（total_count / fetch_status / empty_days），单次 commit"""
         updates = []
@@ -993,6 +999,7 @@ class ProxyDatabase:
 
     def _row_to_instance_source(self, row: aiosqlite.Row) -> InstanceSourceRecord:
         """将数据库行转为 InstanceSourceRecord"""
+        cols = row.keys()  # sqlite3.Row 仅支持通过 keys() 判断列名是否存在
         return InstanceSourceRecord(
             id=row["id"],
             base_url=row["base_url"],
@@ -1003,9 +1010,9 @@ class ProxyDatabase:
             max_concurrent=row["max_concurrent"],
             enabled=bool(row["enabled"]),
             created_at=row["created_at"],
-            total_count=row["total_count"] if "total_count" in row.keys() else 0,
-            fetch_status=row["fetch_status"] if "fetch_status" in row.keys() else "idle",
-            connected_count=row["connected_count"] if "connected_count" in row.keys() else 0,
+            total_count=row["total_count"] if "total_count" in cols else 0,
+            fetch_status=row["fetch_status"] if "fetch_status" in cols else "idle",
+            connected_count=row["connected_count"] if "connected_count" in cols else 0,
         )
 
     async def add_instance_source(self, base_url: str, username: str, password: str,
@@ -1112,9 +1119,9 @@ class ProxyDatabase:
         return cursor.rowcount > 0
 
     async def batch_update_instance_meta(self, source_id: int,
-                                           total_count: int = None,
-                                           fetch_status: str = None,
-                                           connected_count: int = None) -> None:
+                                           total_count: int | None = None,
+                                           fetch_status: str | None = None,
+                                           connected_count: int | None = None) -> None:
         """批量更新服务实例源元信息，单次 commit"""
         updates = []
         params = []
