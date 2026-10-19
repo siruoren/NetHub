@@ -29,6 +29,7 @@ RUN curl -fsSL --connect-timeout 30 --max-time 180 --retry 3 --retry-delay 5 \
     && rm -f /tmp/core.zip
 
 # Xray-core v25.7.16
+ARG GH_MIRROR=""
 RUN curl -fsSL --connect-timeout 30 --max-time 180 --retry 3 --retry-delay 5 \
     "${GH_MIRROR}https://github.com/XTLS/Xray-core/releases/download/v26.7.11/Xray-macos-64.zip" \
     -o /tmp/xray.zip \
