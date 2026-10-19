@@ -143,13 +143,12 @@ class ProxyDatabase:
         except sqlite3.Error as e:
             logger.debug("迁移跳过（可能已存在）: %s", e)
 
-        # 迁移：重建 verified_proxies 表，将 UNIQUE 约束统一为 (instance_source_id, protocol, address, port)
-        # 同时处理旧表 link UNIQUE → (instance_source_id, protocol, address, port)
-        # 和旧表 (instance_source_id, instance_node_name, instance_node_address) → (instance_source_id, protocol, address, port)
+        # 迁移：重建 verified_proxies 表，将 UNIQUE 约束统一为 (instance_source_id, link)
+        # 节点身份为完整配置 URI：同一服务器端口的多个配置（不同 UUID/路径）各自入库
         try:
             cursor = await self._db.execute("PRAGMA index_list(verified_proxies)")
             indexes = await cursor.fetchall()
-            # 检测是否需要迁移：旧表的 UNIQUE 约束不是 (instance_source_id, protocol, address, port)
+            # 检测是否需要迁移：表的 UNIQUE 约束不是 (instance_source_id, link)
             needs_migration = False
             for idx in indexes:
                 if idx["name"].startswith("sqlite_autoindex_"):
@@ -157,7 +156,7 @@ class ProxyDatabase:
                     col_cursor = await self._db.execute("PRAGMA index_info(?)", (idx["name"],))
                     cols = await col_cursor.fetchall()
                     col_names = [c["name"] for c in cols]
-                    if sorted(col_names) != sorted(["instance_source_id", "protocol", "address", "port"]):
+                    if sorted(col_names) != sorted(["instance_source_id", "link"]):
                         needs_migration = True
                         break
 
@@ -175,7 +174,7 @@ class ProxyDatabase:
                         instance_node_name TEXT  NOT NULL DEFAULT '',
                         instance_node_address TEXT NOT NULL DEFAULT '',
                         created_at       TEXT    DEFAULT '',
-                        UNIQUE(instance_source_id, protocol, address, port)
+                        UNIQUE(instance_source_id, link)
                     );
                     INSERT OR IGNORE INTO verified_proxies_new
                         SELECT id, protocol, name, address, port, link, latency_ms,
@@ -448,20 +447,18 @@ class ProxyDatabase:
         self,
         items: list[tuple[ProxyInfo, str, str, int]],
     ) -> tuple[int, int, int, list[str]]:
-        """基于协议+地址+端口精准同步已验证节点（实例节点全量入库）
+        """实例节点全量入库：以 (instance_source_id, link) 为节点身份
 
         items: [(ProxyInfo, instance_node_name, instance_node_address, instance_source_id), ...]
         返回: (新增数, 更新数, 删除数, 新增节点的link列表)
 
         逻辑：
-        1. 获取该实例下所有已验证节点，按 (protocol, address, port) 建索引
+        1. 获取该实例下所有已验证节点的 link 集合
         2. 遍历传入的节点：
-           - 协议+地址+端口已存在于本实例且 link 相同 → 跳过
-           - 协议+地址+端口已存在于本实例但 link 变化 → UPDATE link 及其他字段
-           - 协议+地址+端口不存在于本实例 → INSERT
-             （全量入库：即使与订阅节点或其他实例的节点重复也入库，
-             对外订阅输出时统一去重）
-        3. 本实例已有但不在当前已连接列表中的节点保留（不清理），
+           - link 已存在于本实例 → 跳过
+           - link 不存在 → INSERT（全量入库：同一服务器端口的多个配置
+             （不同 UUID/路径）各自入库，不做网络检测，不做跨实例/订阅去重）
+        3. 已有节点保留（不在当前已连接中也保留），
            节点总量超过上限时由全局限制按入库时间最早自动清理
         """
         if not items:
@@ -470,70 +467,40 @@ class ProxyDatabase:
         instance_source_id = items[0][3]
         now = datetime.now(timezone(timedelta(hours=8))).isoformat()
 
-        # 获取该实例下所有已验证节点
+        # 获取该实例下所有已验证节点的 link 集合
         cursor = await self._db.execute(
-            "SELECT id, protocol, name, address, port, link, latency_ms, instance_node_name, instance_node_address FROM verified_proxies WHERE instance_source_id = ?",
+            "SELECT link FROM verified_proxies WHERE instance_source_id = ?",
             (instance_source_id,),
         )
-        rows = await cursor.fetchall()
-
-        # 按 (protocol, address, port) 建索引，同 key 保留最新 id
-        existing_map: dict[tuple[str, str, str], dict] = {}
-        for row in rows:
-            key = (row["protocol"], row["address"], row["port"])
-            existing_map[key] = {
-                "id": row["id"],
-                "link": row["link"],
-                "latency_ms": row["latency_ms"],
-                "instance_node_name": row["instance_node_name"] or "",
-                "instance_node_address": row["instance_node_address"] or "",
-            }
+        existing_links = {row["link"] for row in await cursor.fetchall()}
 
         added = 0
-        updated = 0
         new_links: list[str] = []
 
         for proxy, inst_name, inst_addr, _source_id in items:
-            key = (proxy.protocol, proxy.address, proxy.port)
-            existing = existing_map.get(key)
+            if proxy.link in existing_links:
+                continue
+            # 新配置直接入库，UNIQUE(instance_source_id, link) 保证同实例不重复
+            try:
+                cursor = await self._db.execute(
+                    """INSERT OR IGNORE INTO verified_proxies
+                       (protocol, name, address, port, link, latency_ms, instance_source_id,
+                        instance_node_name, instance_node_address, created_at)
+                       VALUES (?, ?, ?, ?, ?, -1, ?, ?, ?, ?)""",
+                    (proxy.protocol, proxy.name, proxy.address, proxy.port, proxy.link,
+                     instance_source_id, inst_name, inst_addr, now),
+                )
+                await self._db.commit()
+                if cursor.rowcount > 0:
+                    added += 1
+                    new_links.append(proxy.link)
+                    existing_links.add(proxy.link)
+            except sqlite3.Error as e:
+                logger.debug("同步插入新节点失败（跳过）: %s", e)
 
-            if existing:
-                if existing["link"] != proxy.link:
-                    # link 变化，更新节点信息并重置延迟
-                    try:
-                        await self._db.execute(
-                            """UPDATE verified_proxies
-                               SET name = ?, link = ?, latency_ms = -1,
-                                   instance_node_name = ?, instance_node_address = ?
-                               WHERE id = ?""",
-                            (proxy.name, proxy.link, inst_name, inst_addr, existing["id"]),
-                        )
-                        await self._db.commit()
-                        updated += 1
-                    except sqlite3.Error as e:
-                        logger.debug("同步更新已验证节点失败（跳过）: %s", e)
-            else:
-                # 新节点直接入库（全量入库，不做跨实例/订阅去重）
-                # UNIQUE(instance_source_id, protocol, address, port) 保证同实例不重复
-                try:
-                    cursor = await self._db.execute(
-                        """INSERT OR IGNORE INTO verified_proxies
-                           (protocol, name, address, port, link, latency_ms, instance_source_id,
-                            instance_node_name, instance_node_address, created_at)
-                           VALUES (?, ?, ?, ?, ?, -1, ?, ?, ?, ?)""",
-                        (proxy.protocol, proxy.name, proxy.address, proxy.port, proxy.link,
-                         instance_source_id, inst_name, inst_addr, now),
-                    )
-                    await self._db.commit()
-                    if cursor.rowcount > 0:
-                        added += 1
-                        new_links.append(proxy.link)
-                except sqlite3.Error as e:
-                    logger.debug("同步插入新节点失败（跳过）: %s", e)
-
-        if added or updated:
+        if added:
             self._invalidate_stats()
-        return added, updated, 0, new_links
+        return added, 0, 0, new_links
 
     async def get_verified_by_instance_id(self, instance_source_id: int) -> list[ProxyDBRecord]:
         """获取指定实例源下的所有已验证节点"""
@@ -584,8 +551,8 @@ class ProxyDatabase:
     async def get_subscription_output_proxies(self, max_latency: float) -> list[ProxyDBRecord]:
         """获取对外订阅输出节点列表（统一去重入口）
 
-        输出订阅节点库和已验证库中延迟达标的节点，按 (protocol, address, port) 统一去重
-        （实例节点全量入库后，重复节点在输出时去除，已验证库优先保留）
+        输出订阅节点库和已验证库中延迟达标的节点，按 link（完整配置 URI）统一去重
+        （同一配置只输出一次；同一服务器端口的不同配置各自输出，已检测节点优先保留）
         """
         # 获取订阅节点库中的可用节点
         cursor = await self._db.execute(
@@ -609,26 +576,15 @@ class ProxyDatabase:
         verified_rows = await v_cursor.fetchall()
         verified_records = [self._row_to_verified_record(row) for row in verified_rows]
 
-        # 按 (protocol, address, port) 去重（已验证库优先）
-        seen_keys = set()
-        output_proxies = []
-
-        # 先添加已验证库节点
-        for record in verified_records:
-            key = (record.protocol, record.address, record.port)
-            if key not in seen_keys:
-                seen_keys.add(key)
-                output_proxies.append(record)
-
-        # 再添加订阅库节点（跳过已存在的协议+地址+端口）
-        for record in proxy_records:
-            key = (record.protocol, record.address, record.port)
-            if key not in seen_keys:
-                seen_keys.add(key)
-                output_proxies.append(record)
+        # 按 link 去重合并（已检测节点优先于未检测节点）
+        merged: dict[str, ProxyDBRecord] = {}
+        for record in verified_records + proxy_records:
+            existing = merged.get(record.link)
+            if existing is None or (existing.latency_ms < 0 and record.latency_ms > 0):
+                merged[record.link] = record
 
         # 按延迟排序（未检测节点排在已测节点之后）
-        output_proxies.sort(key=lambda x: (x.latency_ms < 0, x.latency_ms))
+        output_proxies = sorted(merged.values(), key=lambda x: (x.latency_ms < 0, x.latency_ms))
         return output_proxies
 
     async def get_proxies_by_keys(self, keys: list[tuple[str, str, str]]) -> dict[tuple[str, str, str], ProxyDBRecord]:
