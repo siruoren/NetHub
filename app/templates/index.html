@@ -260,7 +260,7 @@
                         </thead>
                         <tbody>
                             {% for inst in instance_sources %}
-                            <tr>
+                            <tr data-inst-row="{{ inst.id }}">
                                 <td>{{ inst.id }}</td>
                                 <td><code style="font-size:0.75rem">{{ inst.base_url[:30] }}{% if inst.base_url|length > 30 %}...{% endif %}</code></td>
                                 <td><span class="badge bg-info">{{ inst.connected_count }}</span></td>
@@ -1519,6 +1519,23 @@ async function refreshStats() {
         const avgLatencyEl = document.querySelector('.stat-card.bg-info h3');
         if (avgLatencyEl) {
             avgLatencyEl.textContent = Math.round(stats.avg_latency_ms || 0) + ' ms';
+        }
+
+        // 实时刷新实例节点数量（实例同步入库后自动更新）
+        const instResp = await fetch('/api/instance-sources', {cache: 'no-store'});
+        if (instResp.ok) {
+            const instData = await instResp.json();
+            (instData.sources || []).forEach(function(inst) {
+                // 实例源表格"已连接"数量
+                const row = document.querySelector('tr[data-inst-row="' + inst.id + '"]');
+                if (row) {
+                    const connBadge = row.querySelector('td:nth-child(3) .badge');
+                    if (connBadge) connBadge.textContent = inst.connected_count || 0;
+                }
+                // 实例标签页的节点数 badge
+                const tabBadge = document.querySelector('#tab-inst-' + inst.id + ' .badge');
+                if (tabBadge) tabBadge.textContent = inst.total_count || 0;
+            });
         }
     } catch (e) {
         console.error('刷新统计失败:', e);
