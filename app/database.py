@@ -558,11 +558,11 @@ class ProxyDatabase:
         return [self._row_to_verified_record(row) for row in rows]
 
     async def get_all_verified_proxies(self, max_latency: float) -> list[ProxyDBRecord]:
-        """获取所有延迟达标的已验证节点"""
+        """获取所有可用已验证节点（含未检测的直连节点，未检测节点排在已测节点之后）"""
         cursor = await self._db.execute(
             """SELECT * FROM verified_proxies
-               WHERE latency_ms > 0 AND latency_ms <= ?
-               ORDER BY latency_ms ASC""",
+               WHERE latency_ms = -1 OR (latency_ms > 0 AND latency_ms <= ?)
+               ORDER BY (CASE WHEN latency_ms = -1 THEN 1 ELSE 0 END), latency_ms ASC""",
             (max_latency,),
         )
         rows = await cursor.fetchall()
@@ -610,12 +610,12 @@ class ProxyDatabase:
         proxy_rows = await cursor.fetchall()
         proxy_records = [self._row_to_record(row) for row in proxy_rows]
 
-        # 获取已验证库中的可用节点
+        # 获取已验证库中的可用节点（含未检测的直连节点，未检测节点排在已测节点之后）
         v_cursor = await self._db.execute(
             """SELECT * FROM verified_proxies
-               WHERE latency_ms > 0
-                 AND latency_ms <= ?
-               ORDER BY latency_ms ASC""",
+               WHERE latency_ms = -1
+                 OR (latency_ms > 0 AND latency_ms <= ?)
+               ORDER BY (CASE WHEN latency_ms = -1 THEN 1 ELSE 0 END), latency_ms ASC""",
             (max_latency,),
         )
         verified_rows = await v_cursor.fetchall()
@@ -639,8 +639,8 @@ class ProxyDatabase:
                 seen_keys.add(key)
                 output_proxies.append(record)
 
-        # 按延迟排序
-        output_proxies.sort(key=lambda x: x.latency_ms)
+        # 按延迟排序（未检测节点排在已测节点之后）
+        output_proxies.sort(key=lambda x: (x.latency_ms < 0, x.latency_ms))
         return output_proxies
 
     async def get_proxies_by_keys(self, keys: list[tuple[str, str, str]]) -> dict[tuple[str, str, str], ProxyDBRecord]:
@@ -932,9 +932,9 @@ class ProxyDatabase:
         protocol_dist = {row["protocol"]: row["available"] for row in rows}
 
         if max_latency > 0:
-            v_cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies WHERE latency_ms > 0 AND latency_ms <= ?", (max_latency,))
+            v_cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies WHERE latency_ms = -1 OR (latency_ms > 0 AND latency_ms <= ?)", (max_latency,))
         else:
-            v_cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies WHERE latency_ms > 0")
+            v_cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies WHERE latency_ms = -1 OR latency_ms > 0")
         v_available = (await v_cursor.fetchone())["cnt"]
 
         # Total instance nodes (all verified nodes regardless of latency)
