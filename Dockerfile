@@ -1,7 +1,6 @@
 FROM python:3.11-slim
 
-# GitHub 下载镜像前缀（国内构建可设为 https://ghgo.xyz/ 等）
-ARG GH_MIRROR="https://github.geekery.cn/"
+
 
 WORKDIR /app
 
@@ -20,6 +19,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # 下载核心（固定版本 + 超时重试）
 # v2ray-core v5.23.0
+# GitHub 下载镜像前缀（国内构建可设为 https://ghgo.xyz/ 等）
+ARG GH_MIRROR=""
 RUN curl -fsSL --connect-timeout 30 --max-time 180 --retry 3 --retry-delay 5 \
     "${GH_MIRROR}https://github.com/v2fly/v2ray-core/releases/download/v5.51.2/v2ray-linux-64.zip" \
     -o /tmp/core.zip \
