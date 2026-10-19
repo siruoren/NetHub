@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import aiosqlite
@@ -134,13 +135,13 @@ class ProxyDatabase:
         try:
             await self._db.execute("ALTER TABLE verified_proxies ADD COLUMN instance_node_name TEXT NOT NULL DEFAULT ''")
             await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
         try:
             await self._db.execute("ALTER TABLE verified_proxies ADD COLUMN instance_node_address TEXT NOT NULL DEFAULT ''")
             await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
 
         # 迁移：重建 verified_proxies 表，将 UNIQUE 约束统一为 (instance_source_id, protocol, address, port)
         # 同时处理旧表 link UNIQUE → (instance_source_id, protocol, address, port)
@@ -189,15 +190,15 @@ class ProxyDatabase:
                 await self._db.execute("CREATE INDEX IF NOT EXISTS idx_verified_proxies_instance_id ON verified_proxies(instance_source_id)")
                 await self._db.execute("CREATE INDEX IF NOT EXISTS idx_verified_proxies_link ON verified_proxies(link)")
                 await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
 
         # 迁移：为旧表添加 subscription_id 列（如不存在）
         try:
             await self._db.execute("ALTER TABLE proxies ADD COLUMN subscription_id INTEGER NOT NULL DEFAULT 0")
             await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
 
         # 迁移：重建 proxies 表，将 UNIQUE 约束从 link 改为 (protocol, address, port)
         try:
@@ -245,8 +246,8 @@ class ProxyDatabase:
                 await self._db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_sub_created ON proxies(subscription_id, created_at)")
                 await self._db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_available ON proxies(latency_ms, subscription_id)")
                 await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
 
         # 兼容旧表：添加 check_urls 表（如不存在）
         try:
@@ -254,8 +255,8 @@ class ProxyDatabase:
                 "CREATE TABLE IF NOT EXISTS check_urls (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL UNIQUE)"
             )
             await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
 
         # 迁移：将旧的 http:// 检测 URL 升级为 https://
         try:
@@ -263,31 +264,31 @@ class ProxyDatabase:
                 "UPDATE check_urls SET url = REPLACE(url, 'http://', 'https://') WHERE url LIKE 'http://%'"
             )
             await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
 
         # 兼容旧表：添加 empty_days 和 total_count 列（如不存在）
         try:
             await self._db.execute("ALTER TABLE subscriptions ADD COLUMN empty_days INTEGER DEFAULT 0")
             await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
         try:
             await self._db.execute("ALTER TABLE subscriptions ADD COLUMN total_count INTEGER DEFAULT 0")
             await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
         try:
             await self._db.execute("ALTER TABLE subscriptions ADD COLUMN fetch_status TEXT DEFAULT 'idle'")
             await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
         # 迁移：为 instance_sources 表添加新列
         try:
             await self._db.execute("ALTER TABLE instance_sources ADD COLUMN connected_count INTEGER DEFAULT 0")
             await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
     async def close(self) -> None:
         """关闭数据库连接"""
         if self._db:
@@ -520,8 +521,8 @@ class ProxyDatabase:
                         )
                         await self._db.commit()
                         updated += 1
-                    except Exception:
-                        pass
+                    except sqlite3.Error as e:
+                        logger.debug("同步更新已验证节点失败（跳过）: %s", e)
             else:
                 # 检查全局是否已存在（其他实例源已有此节点）
                 if key in global_keys:
@@ -544,8 +545,8 @@ class ProxyDatabase:
                         added += 1
                         new_links.append(proxy.link)
                         global_keys.add(key)  # 新增后更新全局键集合
-                except Exception:
-                    pass
+                except sqlite3.Error as e:
+                    logger.debug("同步插入新节点失败（跳过）: %s", e)
 
         if skipped_duplicate > 0:
             logger.info("全局去重跳过 %d 个节点（已在其他实例源中存在）", skipped_duplicate)

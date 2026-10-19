@@ -38,13 +38,13 @@ RUN curl -fsSL --connect-timeout 30 --max-time 180 --retry 3 --retry-delay 5 \
     && rm -f /tmp/xray.zip
 
 # 下载 geosite.dat / geoip.dat 数据文件
-ARG GH_MIRROR="https://ghfile.geekertao.top/"
+ARG GH_MIRROR="https://gh.monlor.com/"
 RUN curl -fsSL --connect-timeout 30 "${GH_MIRROR}https://github.com/v2fly/domain-list-community/releases/download/20260717032527/dlc.dat" -o /usr/local/bin/geosite.dat 
 RUN curl -fsSL --connect-timeout 30 "${GH_MIRROR}https://github.com/v2fly/geoip/releases/download/202607171233/geoip.dat" -o /usr/local/bin/geoip.dat
 
 
 # 复制代码
-COPY . .
+COPY  app config.yaml  .
 
 # 创建数据目录
 RUN mkdir -p /app/data
