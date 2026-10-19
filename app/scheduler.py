@@ -311,8 +311,9 @@ class TaskScheduler:
             self._fetching = False
 
     async def verify_stored_proxies(self) -> None:
-        """验证已存节点可用性（按订阅源分组批量检测 + 批量数据库写入）+ 验证实例已验证节点
+        """验证订阅已入库节点可用性（按订阅源分组批量检测 + 批量数据库写入）
 
+        实例节点信任实例检测结果，平台不做网络检测
         使用 grouped 查询替代全量查询，利用复合索引加速
         """
         if self._verifying:
@@ -321,17 +322,7 @@ class TaskScheduler:
 
         self._verifying = True
         try:
-            # --- 1. 验证实例已验证节点 ---
-            instance_sources = await self.db.get_all_instance_sources()
-            for inst in instance_sources:
-                if not inst.enabled:
-                    continue
-                try:
-                    await self._verify_instance_verified(inst.id)
-                except Exception as e:
-                    logger.error("实例源 #%d 全量验证异常: %s", inst.id, e)
-
-            # --- 2. 验证订阅节点 ---
+            # --- 验证订阅节点 ---
             grouped = await self.db.get_proxies_grouped_by_subscription(
                 self.config.check.latency_threshold * 2  # 验证时阈值放宽2倍
             )
@@ -465,7 +456,7 @@ class TaskScheduler:
             self._add_instance_source_job(source)
 
     async def _fetch_single_instance_source(self, source_id: int) -> None:
-        """从服务实例获取已连接节点，基于实例节点身份精准同步已验证库，再全量验证延迟
+        """从服务实例获取已连接节点，基于实例节点身份精准同步已验证库（直接入库，不做网络检测）
 
         流程：
         1. 登录实例获取已连接节点和订阅地址列表
@@ -473,12 +464,10 @@ class TaskScheduler:
         3. 精准同步：基于实例节点身份(instance_node_name+address)对比已验证库
            - 身份已存在且 link 相同 → 跳过
            - 身份已存在但 link 变化 → UPDATE link 及字段
-           - 身份不存在 → INSERT 新节点
+           - 身份不存在 → INSERT 新节点（直接入库，不做网络检测）
            - 已有但不在当前已连接中 → DELETE（已断开）
-        4. 全量验证：检测已验证库中该实例下所有节点的延迟
-        5. 检测失败的删除，可达的更新延迟
-        6. 全局实例节点限制检查
-        7. 全局订阅节点限制检查（仅限制订阅入库节点总数）
+        4. 全局实例节点限制检查
+        5. 全局订阅节点限制检查（仅限制订阅入库节点总数）
         """
         # 防止并发获取同一实例源
         if source_id in self._fetching_instances:
@@ -524,23 +513,14 @@ class TaskScheduler:
                     deleted_from_proxies = await self.db.delete_proxies_by_keys(list(existing_in_proxies))
                     logger.info("实例源 #%d: 从订阅节点库中移除 %d 个重复节点", source.id, deleted_from_proxies)
 
-                # 基于实例节点身份精准同步：新增/更新/删除
+                # 基于实例节点身份精准同步：新增/更新/删除（新增节点直接入库，不做网络检测）
                 sync_items = [
                     (proxy, inst_name, inst_addr, source_id)
                     for proxy, inst_name, inst_addr in proxies
                 ]
-                added, updated, deleted_sync, new_links = await self.db.sync_verified_proxies(sync_items)
+                added, updated, deleted_sync, _ = await self.db.sync_verified_proxies(sync_items)
                 logger.info("实例源 #%d: 同步完成 - 新增 %d, 更新 %d, 删除断开 %d",
                             source.id, added, updated, deleted_sync)
-
-                # 仅检测新增节点的延迟
-                if new_links:
-                    try:
-                        await self._verify_new_instance_nodes(source_id, new_links)
-                    except Exception as verify_error:
-                        logger.error("实例源 #%d: 新增节点验证异常: %s", source.id, verify_error)
-                else:
-                    logger.info("实例源 #%d: 无新增节点，跳过延迟检测", source.id)
             else:
                 # 无已连接节点，清空该实例的已验证记录
                 await self.db.delete_verified_by_instance_id(source_id)
@@ -574,59 +554,6 @@ class TaskScheduler:
             await self.db.batch_update_instance_meta(source_id, fetch_status="failed")
         finally:
             self._fetching_instances.discard(source_id)
-
-    async def _verify_new_instance_nodes(self, source_id: int, new_links: list[str]) -> None:
-        """仅检测新增节点的延迟，检测失败或超阈值则删除
-
-        使用实例源的延迟阈值过滤
-        """
-        try:
-            source = await self.db.get_instance_source_by_id(source_id)
-            if not source:
-                return
-
-            max_latency = source.latency_threshold
-            logger.info("实例源 #%d: 检测 %d 个新增节点延迟（阈值 %.1fms）...",
-                       source_id, len(new_links), max_latency)
-            results = await self.checker.check_batch(new_links)
-
-            # 查询新增节点在 verified_proxies 中的 id
-            proxies = await self.db.get_verified_by_instance_id(source_id)
-            link_to_proxy = {p.link: p for p in proxies}
-
-            latency_updates = []
-            delete_ids = []
-            for link in new_links:
-                latency = results.get(link)
-                proxy = link_to_proxy.get(link)
-                if not proxy:
-                    continue
-                if latency is not None:
-                    if latency <= max_latency:
-                        latency_updates.append((proxy.id, latency))
-                    else:
-                        logger.debug("实例源 #%d: 新节点 %s 延迟 %dms 超过阈值 %.1fms，删除",
-                                   source_id, proxy.name[:30], latency, max_latency)
-                        delete_ids.append(proxy.id)
-                else:
-                    logger.debug("实例源 #%d: 新节点 %s 检测失败，删除", source_id, proxy.name[:30])
-                    delete_ids.append(proxy.id)
-
-            if latency_updates:
-                await self.db.batch_update_verified_latency(latency_updates)
-                latencies = [lat for _, lat in latency_updates]
-                if latencies:
-                    avg_latency = sum(latencies) / len(latencies)
-                    min_latency = min(latencies)
-                    max_latency= max(latencies)
-                    logger.info("实例源 #%d: 新增节点延迟分布 - 平均 %.1fms, 最小 %.1fms, 最大 %.1fms",
-                                source_id, avg_latency, min_latency, max_latency)
-            if delete_ids:
-                await self.db.batch_delete_verified(delete_ids)
-            logger.info("实例源 #%d: 新增节点验证完成 - 成功 %d, 删除 %d",
-                        source_id, len(latency_updates), len(delete_ids))
-        except Exception as e:
-            logger.error("实例源 #%d: 新增节点验证异常: %s", source_id, e, exc_info=True)
 
     async def _verify_instance_verified(self, source_id: int) -> None:
         """验证已验证库中指定实例下所有节点的可用性，检测失败则删除

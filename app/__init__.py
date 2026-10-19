@@ -86,7 +86,7 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
     # 创建 FastAPI 实例
     app = FastAPI(
         title="NetHub",
-        version="2.1.0",
+        version="2.1.1",
         description="节点池管理系统",
     )
 

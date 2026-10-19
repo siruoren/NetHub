@@ -153,7 +153,7 @@ async def manual_fetch_subscription(sub_id: int):
 
 @router.post("/verify")
 async def manual_verify():
-    """手动触发验证节点"""
+    """手动触发验证订阅已入库节点（实例节点不做网络检测）"""
     scheduler = get_scheduler()
     if scheduler._verifying:
         return {"message": "验证任务正在进行中"}
