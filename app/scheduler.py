@@ -466,6 +466,7 @@ class TaskScheduler:
            - 身份不存在 → INSERT 新节点（全量入库，即使与订阅节点或其他实例
              的节点重复也入库，不做网络检测，对外订阅输出时统一去重）
            - 已有但不在当前已连接中 → 保留（不删除）
+           - 实例上报 0 个已连接节点 → 保留已入库节点（仅告警，不清理）
         4. 全局实例节点限制检查（超过上限自动清理入库时间最早的节点）
         5. 全局订阅节点限制检查（仅限制订阅入库节点总数）
         """
@@ -514,8 +515,9 @@ class TaskScheduler:
                 added, updated, _, _ = await self.db.sync_verified_proxies(sync_items)
                 logger.info("实例源 #%d: 同步完成 - 新增 %d, 更新 %d", source.id, added, updated)
             else:
-                # 无已连接节点，清空该实例的已验证记录
-                await self.db.delete_verified_by_instance_id(source_id)
+                # 实例上报 0 个已连接节点：保留已入库节点（断开节点保留规则），
+                # 不做清理，避免实例 API 瞬时异常导致节点被误删
+                logger.warning("实例源 #%d: 实例上报已连接节点为 0，保留已入库节点不做清理", source.id)
 
             # 全局实例节点限制检查（所有已验证节点总数不超限）
             max_instance_nodes = self.config.scheduler.max_instance_nodes
