@@ -455,13 +455,14 @@ class ProxyDatabase:
 
         逻辑：
         1. 获取该实例下所有已验证节点，按 (protocol, address, port) 建索引
-        2. 遍历传入的节点：
+        2. 获取全局已验证节点中所有 (protocol, address, port) 键（跨实例去重）
+        3. 遍历传入的节点：
            - 协议+地址+端口已存在于本实例且 link 相同 → 跳过
            - 协议+地址+端口已存在于本实例但 link 变化 → UPDATE link 及其他字段
-           - 协议+地址+端口不存在于本实例 → INSERT
-             （全量入库：即使与订阅节点或其他实例的节点重复也入库，
-             对外订阅输出时统一去重）
-        3. 本实例已有但不在当前已连接列表中的节点保留（不清理），
+           - 协议+地址+端口不存在于本实例，但存在于其他实例 → 不入库（跨实例去重）
+           - 协议+地址+端口全局不存在 → INSERT（与订阅节点重复也入库，
+             不从订阅节点库移除重复节点）
+        4. 本实例已有但不在当前已连接列表中的节点保留（不清理），
            节点总量超过上限时由全局限制按入库时间最早自动清理
         """
         if not items:
@@ -489,8 +490,17 @@ class ProxyDatabase:
                 "instance_node_address": row["instance_node_address"] or "",
             }
 
+        # 获取全局已验证节点中所有 (protocol, address, port) 键（跨实例去重）
+        cursor = await self._db.execute(
+            "SELECT DISTINCT protocol, address, port FROM verified_proxies"
+        )
+        global_keys: set[tuple[str, str, str]] = {
+            (row["protocol"], row["address"], row["port"]) for row in await cursor.fetchall()
+        }
+
         added = 0
         updated = 0
+        skipped_duplicate = 0
         new_links: list[str] = []
 
         for proxy, inst_name, inst_addr, _source_id in items:
@@ -513,7 +523,12 @@ class ProxyDatabase:
                     except sqlite3.Error as e:
                         logger.debug("同步更新已验证节点失败（跳过）: %s", e)
             else:
-                # 新节点直接入库（全量入库，不做跨实例/订阅去重）
+                # 跨实例去重：同节点（协议+地址+端口）全局只入库一次，
+                # 已在其他实例入库的不再重复计入当前实例
+                if key in global_keys:
+                    skipped_duplicate += 1
+                    continue
+                # 新节点直接入库（与订阅节点重复也入库，不从订阅节点库移除重复节点）
                 # UNIQUE(instance_source_id, protocol, address, port) 保证同实例不重复
                 try:
                     cursor = await self._db.execute(
@@ -528,9 +543,13 @@ class ProxyDatabase:
                     if cursor.rowcount > 0:
                         added += 1
                         new_links.append(proxy.link)
+                        global_keys.add(key)
                 except sqlite3.Error as e:
                     logger.debug("同步插入新节点失败（跳过）: %s", e)
 
+        if skipped_duplicate > 0:
+            logger.info("实例源 #%d: 跨实例去重跳过 %d 个节点（已在其他实例入库）",
+                        instance_source_id, skipped_duplicate)
         if added or updated:
             self._invalidate_stats()
         return added, updated, 0, new_links
@@ -543,27 +562,6 @@ class ProxyDatabase:
         )
         rows = await cursor.fetchall()
         return [self._row_to_verified_record(row) for row in rows]
-
-    async def get_all_verified_proxies(self, max_latency: float) -> list[ProxyDBRecord]:
-        """获取所有可用已验证节点（含未检测的直连节点，未检测节点排在已测节点之后）"""
-        cursor = await self._db.execute(
-            """SELECT * FROM verified_proxies
-               WHERE latency_ms = -1 OR (latency_ms > 0 AND latency_ms <= ?)
-               ORDER BY (CASE WHEN latency_ms = -1 THEN 1 ELSE 0 END), latency_ms ASC""",
-            (max_latency,),
-        )
-        rows = await cursor.fetchall()
-        return [self._row_to_verified_record(row) for row in rows]
-
-    async def delete_verified_by_instance_id(self, instance_source_id: int) -> int:
-        """删除指定实例源下的所有已验证节点"""
-        cursor = await self._db.execute(
-            "DELETE FROM verified_proxies WHERE instance_source_id = ?",
-            (instance_source_id,),
-        )
-        await self._db.commit()
-        self._invalidate_stats()
-        return cursor.rowcount
 
     async def batch_delete_verified(self, ids: list[int]) -> None:
         """批量删除已验证节点"""
