@@ -1,10 +1,11 @@
 from __future__ import annotations
+
 """订阅链接生成模块 - 生成纯文本/Clash 格式订阅内容"""
 
 import base64
 import json
 import logging
-from urllib.parse import urlparse, unquote, parse_qs
+from urllib.parse import parse_qs, unquote, urlparse
 
 import yaml
 
@@ -137,7 +138,7 @@ def _link_to_clash_proxy(link: str, fallback_name: str) -> dict | None:
             return _trojan_link_to_clash(link, fallback_name)
         elif link.startswith("ss://"):
             return _ss_link_to_clash(link, fallback_name)
-        elif link.startswith("hysteria2://") or link.startswith("hy2://"):
+        elif link.startswith(("hysteria2://", "hy2://")):
             return _hysteria2_link_to_clash(link, fallback_name)
         elif link.startswith("socks5://"):
             return _socks_link_to_clash(link, fallback_name)

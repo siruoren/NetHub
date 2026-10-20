@@ -1,14 +1,20 @@
 from __future__ import annotations
+
 """数据库操作层 - aiosqlite 异步封装"""
 
-import os
-from datetime import datetime, timedelta, timezone
-
 import logging
+import os
+import sqlite3
+from datetime import datetime, timedelta, timezone
 
 import aiosqlite
 
-from app.models import ProxyDBRecord, ProxyInfo, SubscriptionRecord, InstanceSourceRecord
+from app.models import (
+    InstanceSourceRecord,
+    ProxyDBRecord,
+    ProxyInfo,
+    SubscriptionRecord,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -129,13 +135,13 @@ class ProxyDatabase:
         try:
             await self._db.execute("ALTER TABLE verified_proxies ADD COLUMN instance_node_name TEXT NOT NULL DEFAULT ''")
             await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
         try:
             await self._db.execute("ALTER TABLE verified_proxies ADD COLUMN instance_node_address TEXT NOT NULL DEFAULT ''")
             await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
 
         # 迁移：重建 verified_proxies 表，将 UNIQUE 约束统一为 (instance_source_id, protocol, address, port)
         # 同时处理旧表 link UNIQUE → (instance_source_id, protocol, address, port)
@@ -184,15 +190,15 @@ class ProxyDatabase:
                 await self._db.execute("CREATE INDEX IF NOT EXISTS idx_verified_proxies_instance_id ON verified_proxies(instance_source_id)")
                 await self._db.execute("CREATE INDEX IF NOT EXISTS idx_verified_proxies_link ON verified_proxies(link)")
                 await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
 
         # 迁移：为旧表添加 subscription_id 列（如不存在）
         try:
             await self._db.execute("ALTER TABLE proxies ADD COLUMN subscription_id INTEGER NOT NULL DEFAULT 0")
             await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
 
         # 迁移：重建 proxies 表，将 UNIQUE 约束从 link 改为 (protocol, address, port)
         try:
@@ -240,8 +246,8 @@ class ProxyDatabase:
                 await self._db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_sub_created ON proxies(subscription_id, created_at)")
                 await self._db.execute("CREATE INDEX IF NOT EXISTS idx_proxies_available ON proxies(latency_ms, subscription_id)")
                 await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
 
         # 兼容旧表：添加 check_urls 表（如不存在）
         try:
@@ -249,8 +255,8 @@ class ProxyDatabase:
                 "CREATE TABLE IF NOT EXISTS check_urls (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL UNIQUE)"
             )
             await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
 
         # 迁移：将旧的 http:// 检测 URL 升级为 https://
         try:
@@ -258,31 +264,31 @@ class ProxyDatabase:
                 "UPDATE check_urls SET url = REPLACE(url, 'http://', 'https://') WHERE url LIKE 'http://%'"
             )
             await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
 
         # 兼容旧表：添加 empty_days 和 total_count 列（如不存在）
         try:
             await self._db.execute("ALTER TABLE subscriptions ADD COLUMN empty_days INTEGER DEFAULT 0")
             await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
         try:
             await self._db.execute("ALTER TABLE subscriptions ADD COLUMN total_count INTEGER DEFAULT 0")
             await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
         try:
             await self._db.execute("ALTER TABLE subscriptions ADD COLUMN fetch_status TEXT DEFAULT 'idle'")
             await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
         # 迁移：为 instance_sources 表添加新列
         try:
             await self._db.execute("ALTER TABLE instance_sources ADD COLUMN connected_count INTEGER DEFAULT 0")
             await self._db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.debug("迁移跳过（可能已存在）: %s", e)
     async def close(self) -> None:
         """关闭数据库连接"""
         if self._db:
@@ -442,20 +448,21 @@ class ProxyDatabase:
         self,
         items: list[tuple[ProxyInfo, str, str, int]],
     ) -> tuple[int, int, int, list[str]]:
-        """基于协议+地址+端口精准同步已验证节点（全局去重）
+        """基于协议+地址+端口精准同步已验证节点（实例节点全量入库）
 
         items: [(ProxyInfo, instance_node_name, instance_node_address, instance_source_id), ...]
         返回: (新增数, 更新数, 删除数, 新增节点的link列表)
 
         逻辑：
         1. 获取该实例下所有已验证节点，按 (protocol, address, port) 建索引
-        2. 获取全局已验证节点中所有 (protocol, address, port) 键集合，用于全局去重
-        3. 遍历传入的节点：
+        2. 遍历传入的节点：
            - 协议+地址+端口已存在于本实例且 link 相同 → 跳过
            - 协议+地址+端口已存在于本实例但 link 变化 → UPDATE link 及其他字段
-           - 协议+地址+端口不存在于本实例，但存在于其他实例 → 不入库（全局去重）
-           - 协议+地址+端口全局不存在 → INSERT
-        4. 不在当前已连接列表中的节点保留不清理
+           - 协议+地址+端口不存在于本实例 → INSERT
+             （全量入库：即使与订阅节点或其他实例的节点重复也入库，
+             对外订阅输出时统一去重）
+        3. 本实例已有但不在当前已连接列表中的节点保留（不清理），
+           节点总量超过上限时由全局限制按入库时间最早自动清理
         """
         if not items:
             return 0, 0, 0, []
@@ -482,24 +489,12 @@ class ProxyDatabase:
                 "instance_node_address": row["instance_node_address"] or "",
             }
 
-        # 获取全局已验证节点中所有 (protocol, address, port) 键（跨实例去重）
-        cursor = await self._db.execute(
-            "SELECT DISTINCT protocol, address, port FROM verified_proxies"
-        )
-        global_rows = await cursor.fetchall()
-        global_keys: set[tuple[str, str, str]] = set()
-        for row in global_rows:
-            global_keys.add((row["protocol"], row["address"], row["port"]))
-
         added = 0
         updated = 0
-        skipped_duplicate = 0
         new_links: list[str] = []
-        matched_keys: set[tuple[str, str, str]] = set()
 
         for proxy, inst_name, inst_addr, _source_id in items:
             key = (proxy.protocol, proxy.address, proxy.port)
-            matched_keys.add(key)
             existing = existing_map.get(key)
 
             if existing:
@@ -515,16 +510,11 @@ class ProxyDatabase:
                         )
                         await self._db.commit()
                         updated += 1
-                    except Exception:
-                        pass
+                    except sqlite3.Error as e:
+                        logger.debug("同步更新已验证节点失败（跳过）: %s", e)
             else:
-                # 检查全局是否已存在（其他实例源已有此节点）
-                if key in global_keys:
-                    skipped_duplicate += 1
-                    logger.debug("全局去重跳过: %s(%s:%s) 已存在于其他实例源",
-                                 proxy.protocol, proxy.address, proxy.port)
-                    continue
-                # 新节点，UNIQUE(instance_source_id, protocol, address, port) 保证不重复
+                # 新节点直接入库（全量入库，不做跨实例/订阅去重）
+                # UNIQUE(instance_source_id, protocol, address, port) 保证同实例不重复
                 try:
                     cursor = await self._db.execute(
                         """INSERT OR IGNORE INTO verified_proxies
@@ -538,12 +528,9 @@ class ProxyDatabase:
                     if cursor.rowcount > 0:
                         added += 1
                         new_links.append(proxy.link)
-                        global_keys.add(key)  # 新增后更新全局键集合
-                except Exception:
-                    pass
+                except sqlite3.Error as e:
+                    logger.debug("同步插入新节点失败（跳过）: %s", e)
 
-        if skipped_duplicate > 0:
-            logger.info("全局去重跳过 %d 个节点（已在其他实例源中存在）", skipped_duplicate)
         if added or updated:
             self._invalidate_stats()
         return added, updated, 0, new_links
@@ -595,9 +582,10 @@ class ProxyDatabase:
             await self._db.commit()
 
     async def get_subscription_output_proxies(self, max_latency: float) -> list[ProxyDBRecord]:
-        """获取对外订阅输出节点列表
+        """获取对外订阅输出节点列表（统一去重入口）
 
-        输出订阅节点库和已验证库中延迟达标的节点，按 link 去重
+        输出订阅节点库和已验证库中延迟达标的节点，按 (protocol, address, port) 统一去重
+        （实例节点全量入库后，重复节点在输出时去除，已验证库优先保留）
         """
         # 获取订阅节点库中的可用节点
         cursor = await self._db.execute(
@@ -672,35 +660,6 @@ class ProxyDatabase:
                 result.add((protocol, address, port))
         return result
 
-    async def get_proxy_keys_set(self, keys: list[tuple[str, str, str]]) -> set[tuple[str, str, str]]:
-        """从订阅节点库中查找给定 (protocol, address, port) 中存在的 key 集合"""
-        if not keys:
-            return set()
-        result = set()
-        for protocol, address, port in keys:
-            cursor = await self._db.execute(
-                "SELECT 1 FROM proxies WHERE protocol = ? AND address = ? AND port = ?",
-                (protocol, address, port),
-            )
-            if await cursor.fetchone():
-                result.add((protocol, address, port))
-        return result
-
-    async def delete_proxies_by_keys(self, keys: list[tuple[str, str, str]]) -> int:
-        """根据 (protocol, address, port) 批量删除订阅节点库中的节点，返回删除数量"""
-        if not keys:
-            return 0
-        deleted = 0
-        for protocol, address, port in keys:
-            cursor = await self._db.execute(
-                "DELETE FROM proxies WHERE protocol = ? AND address = ? AND port = ?",
-                (protocol, address, port),
-            )
-            await self._db.commit()
-            deleted += cursor.rowcount
-        self._invalidate_stats()
-        return deleted
-
     async def delete_proxies_by_subscription_id_and_protocol(self, subscription_id: int, protocol: str) -> int:
         """删除指定订阅源下特定协议的所有节点，返回删除数量"""
         cursor = await self._db.execute(
@@ -731,6 +690,7 @@ class ProxyDatabase:
 
     def _row_to_subscription(self, row: aiosqlite.Row) -> SubscriptionRecord:
         """将数据库行转为 SubscriptionRecord"""
+        cols = row.keys()  # sqlite3.Row 仅支持通过 keys() 判断列名是否存在
         return SubscriptionRecord(
             id=row["id"],
             url=row["url"],
@@ -740,9 +700,9 @@ class ProxyDatabase:
             max_concurrent=row["max_concurrent"],
             enabled=bool(row["enabled"]),
             created_at=row["created_at"],
-            empty_days=row["empty_days"] if "empty_days" in row.keys() else 0,
-            total_count=row["total_count"] if "total_count" in row.keys() else 0,
-            fetch_status=row["fetch_status"] if "fetch_status" in row.keys() else "idle",
+            empty_days=row["empty_days"] if "empty_days" in cols else 0,
+            total_count=row["total_count"] if "total_count" in cols else 0,
+            fetch_status=row["fetch_status"] if "fetch_status" in cols else "idle",
         )
 
     # ---- 订阅管理 ----
@@ -834,8 +794,8 @@ class ProxyDatabase:
         await self._db.commit()
 
     async def batch_update_subscription_meta(self, sub_id: int,
-                                              total_count: int = None,
-                                              fetch_status: str = None,
+                                              total_count: int | None = None,
+                                              fetch_status: str | None = None,
                                               reset_empty: bool = False) -> None:
         """批量更新订阅源元信息（total_count / fetch_status / empty_days），单次 commit"""
         updates = []
@@ -993,6 +953,7 @@ class ProxyDatabase:
 
     def _row_to_instance_source(self, row: aiosqlite.Row) -> InstanceSourceRecord:
         """将数据库行转为 InstanceSourceRecord"""
+        cols = row.keys()  # sqlite3.Row 仅支持通过 keys() 判断列名是否存在
         return InstanceSourceRecord(
             id=row["id"],
             base_url=row["base_url"],
@@ -1003,9 +964,9 @@ class ProxyDatabase:
             max_concurrent=row["max_concurrent"],
             enabled=bool(row["enabled"]),
             created_at=row["created_at"],
-            total_count=row["total_count"] if "total_count" in row.keys() else 0,
-            fetch_status=row["fetch_status"] if "fetch_status" in row.keys() else "idle",
-            connected_count=row["connected_count"] if "connected_count" in row.keys() else 0,
+            total_count=row["total_count"] if "total_count" in cols else 0,
+            fetch_status=row["fetch_status"] if "fetch_status" in cols else "idle",
+            connected_count=row["connected_count"] if "connected_count" in cols else 0,
         )
 
     async def add_instance_source(self, base_url: str, username: str, password: str,
@@ -1052,7 +1013,7 @@ class ProxyDatabase:
         return [self._row_to_instance_source(row) for row in rows]
 
     async def enforce_max_all_verified_proxies(self, max_count: int) -> int:
-        """执行全局实例节点限制，超出则优先删除延迟为-1的，再按入库最久+延迟最高优先删除"""
+        """执行全局实例节点限制，超出则自动清理入库时间最早的节点"""
         if max_count <= 0:
             return 0
         cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM verified_proxies")
@@ -1063,8 +1024,7 @@ class ProxyDatabase:
         cursor = await self._db.execute(
             """DELETE FROM verified_proxies WHERE id IN (
                 SELECT id FROM verified_proxies
-                ORDER BY (CASE WHEN latency_ms = -1 THEN 0 ELSE 1 END),
-                         created_at ASC, latency_ms DESC LIMIT ?
+                ORDER BY created_at ASC, id ASC LIMIT ?
             )""",
             (excess,),
         )
@@ -1112,9 +1072,9 @@ class ProxyDatabase:
         return cursor.rowcount > 0
 
     async def batch_update_instance_meta(self, source_id: int,
-                                           total_count: int = None,
-                                           fetch_status: str = None,
-                                           connected_count: int = None) -> None:
+                                           total_count: int | None = None,
+                                           fetch_status: str | None = None,
+                                           connected_count: int | None = None) -> None:
         """批量更新服务实例源元信息，单次 commit"""
         updates = []
         params = []
