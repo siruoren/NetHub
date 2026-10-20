@@ -460,11 +460,12 @@ class TaskScheduler:
         流程：
         1. 登录实例获取已连接节点和订阅地址列表
         2. 保存已连接数（connected_count）到数据库
-        3. 精准同步：基于实例节点身份(instance_node_name+address)对比已验证库
+        3. 精准同步：以 (protocol, address, port) 为节点身份对比已验证库
            - 身份已存在且 link 相同 → 跳过
            - 身份已存在但 link 变化 → UPDATE link 及字段
-           - 身份不存在 → INSERT 新节点（全量入库，即使与订阅节点或其他实例
-             的节点重复也入库，不做网络检测，对外订阅输出时统一去重）
+           - 身份不存在但其他实例已有 → 跳过（跨实例去重，同节点全局只入库一次）
+           - 身份全局不存在 → INSERT 新节点（即使与订阅节点重复也入库，
+             不从订阅节点库移除重复节点，不做网络检测，对外订阅输出时统一去重）
            - 已有但不在当前已连接中 → 保留（不删除）
            - 实例上报 0 个已连接节点 → 保留已入库节点（仅告警，不清理）
         4. 全局实例节点限制检查（超过上限自动清理入库时间最早的节点）
@@ -507,7 +508,8 @@ class TaskScheduler:
             await self.db.batch_update_instance_meta(source_id, connected_count=connected_count)
 
             if connected_count > 0:
-                # 实例节点全量入库：与订阅节点/其他实例的节点重复也入库，对外订阅输出时统一去重
+                # 实例节点入库：跨实例去重（同节点全局只入库一次）；
+                # 与订阅节点重复也入库，不从订阅节点库移除重复节点；对外订阅输出时统一去重
                 sync_items = [
                     (proxy, inst_name, inst_addr, source_id)
                     for proxy, inst_name, inst_addr in proxies
